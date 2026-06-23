@@ -1,0 +1,2 @@
+# call the following in `julia --project ]`
+dev ~/Dropbox/Caltech/Franca/Dohyeon/consensus-optimizer

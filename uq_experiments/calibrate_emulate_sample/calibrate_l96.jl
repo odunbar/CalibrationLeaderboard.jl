@@ -1,0 +1,332 @@
+# Import modules
+using Distributions  # probability distributions and associated functions
+using LinearAlgebra
+using Random
+using JLD2
+using Statistics
+using Flux
+using BSON
+using Dates
+
+
+# CES 
+using EnsembleKalmanProcesses
+using EnsembleKalmanProcesses.DataContainers
+using EnsembleKalmanProcesses.ParameterDistributions
+using EnsembleKalmanProcesses.Localizers
+
+const EKP = EnsembleKalmanProcesses
+
+include(joinpath(@__DIR__, "..", "..", "common", "forward_maps", "Lorenz96.jl")) # Contains Lorenz 96 source code
+include("experiment_config.jl")
+
+verbose_flag = false
+save_all_ekp = true
+########################################################################
+############### Choose problem type and structure ######################
+########################################################################
+
+@assert EXPERIMENT in (:l96_const, :l96_vec, :l96_flux) "For calibrate_l96.jl, set EXPERIMENT to :l96_const, :l96_vec, or :l96_flux in experiment_config.jl"
+cfg         = experiment_config(EXPERIMENT)
+case        = cfg.force_case  # "const-force", "vec-force", or "flux-force"
+N_ens_sizes = cfg.N_ens_sizes
+N_iter      = cfg.N_iter
+n_repeats   = cfg.n_repeats
+terminate_at = cfg.terminate_at
+rng_seeds   = randperm(1_000_000)[1:n_repeats] # list of random seeds
+@info "Running $case case"
+@info "Maximum number of EKI iterations: $N_iter"
+# saved and loaded for plotting etc.
+configuration = Dict(
+    "case" => case,
+    "N_iter" => N_iter,
+    "N_ens_sizes" => N_ens_sizes,
+    "rng_seeds" => rng_seeds,
+    "terminate_at" => terminate_at
+)
+
+if case == "const-force"
+    nx = 40  #dimensions of parameter vector
+    nu = 1
+    phi = ConstantEMC(8.0) # forcing
+    phi_structure = nothing
+    sample_range = nothing
+    prior = constrained_gaussian("φ", 10.0, 4.0, 0, Inf)
+    T = 14.0
+    inff = 2
+
+elseif case == "vec-force"
+    nx = 40  # dimensions of parameter vector
+    nu = nx
+    sinusoid = 8 .+ 6 * sin.((4 * pi * range(0, stop = nx - 1, step = 1)) / nx)
+    phi = VectorEMC(sinusoid)
+    phi_structure = nothing
+    sample_range = nothing
+    pl, psig = 2.0, 3.0
+    prior_cov = zeros(nx, nx) # prior covariance
+    for ii in 1:nx
+        for jj in 1:nx
+            prior_cov[ii, jj] = psig^2 * exp(-abs(ii - jj) / pl)
+        end
+    end
+    prior_mean = 8.0 * ones(nx) # prior mean
+    #Creating prior distribution
+    distribution = Parameterized(MvNormal(prior_mean, prior_cov))
+    constraint = repeat([no_constraint()], 40)
+    name = "ml96_prior"
+    prior = ParameterDistribution(distribution, constraint, name)
+    T = 54.0
+    inff = 2
+
+elseif case == "flux-force"
+    nx = 100  #dimensions of parameter vector
+    nu = 61
+    true_sinusoid(x) = 8 .+ 6 * sin.((4 * pi * x) / 10)
+    x_train = collect(-5.0:0.01:5.0)
+    Random.seed!(20260529)
+    y_train = true_sinusoid.(x_train) .+ 0.2 .* randn(length(x_train))
+    phi_structure = Chain(Dense(1 => 20, tanh), Dense(20 => 1))
+    true_model, _ = train_network(deepcopy(phi_structure), x_train, y_train)
+    sample_range = Float32.(collect(-5.0:0.1:4.9))
+    phi = FluxEMC(true_model, sample_range)
+
+    prior_sinusoid(x) = 8.02 .+ 6.5 * sin.(1.02 * (4 * pi * x) / 10 + 0.2)
+    prior_train = prior_sinusoid.(x_train) .+ 0.2 .* randn(length(x_train))
+    prior_model, prior_mean = train_network(deepcopy(phi_structure), x_train, prior_train)
+
+    y_pred = true_model(reshape(sample_range, 1, :))
+    prior_pred = prior_model(reshape(sample_range, 1, :))
+    # Plot for visualizing training results
+    # p = plot(sample_range, true_sinusoid.(sample_range), label="True function", lw=2, color=:blue)
+    # scatter!(p, x_train, y_train, label="Training data", ms=1, color=:red, alpha=0.5)
+    # plot!(p, sample_range, y_pred[1,:], label="Predicted function", lw=2, color=:green)
+    # xlabel!("x")
+    # ylabel!("y")
+    # title!("Offline 1D DNN")
+    # display(p)
+
+    # p = plot(sample_range, prior_sinusoid.(sample_range), label="True prior function", lw=2, color=:blue)
+    # scatter!(p, x_train, prior_train, label="Training data", ms=1, color=:red, alpha=0.5)
+    # plot!(p, sample_range, prior_pred[1,:], label="Predicted prior function", lw=2, color=:green)
+    # xlabel!("x")
+    # ylabel!("y")
+    # title!("Offline 1D DNN")
+    # display(p)
+
+    # p = plot(sample_range, prior_sinusoid.(sample_range), label="Prior function", lw=2, color=:blue)
+    # plot!(p, sample_range, true_sinusoid.(sample_range), label="True function", lw=2, color=:green)
+    # xlabel!("x")
+    # ylabel!("y")
+    # title!("Offline 1D DNN")
+    # display(p)
+
+    #prior_cov = (0.1^2) * I(length(prior_mean)) # original cov
+    prior_cov = (0.1^2) * Diagonal(prior_mean.^2) # scaled to mean
+    distribution = Parameterized(MvNormal(prior_mean, prior_cov))
+    constraint = repeat([no_constraint()], 61)
+    name = "l96_nn_prior"
+    prior = ParameterDistribution(distribution, constraint, name)
+    T = 54.0
+    inff = 2.5
+
+end
+
+
+########################################################################
+############################ Problem setup #############################
+########################################################################
+rng_seed_init = 11
+rng_i = MersenneTwister(rng_seed_init)
+
+output_dir = joinpath(@__DIR__, "output")
+if !isdir(output_dir)
+    mkdir(output_dir)
+end
+
+ny = nx * 2   #number of data points
+
+#Creating my sythetic data
+prelim_file = joinpath(output_dir, "l96_computed_preliminaries_$(case).jld2")
+if isfile(prelim_file)
+    loaded_data = JLD2.load(prelim_file)
+    x0 = loaded_data["x0"]
+    y = loaded_data["y"]
+    ic_cov_sqrt = loaded_data["ic_cov_sqrt"]
+    R = loaded_data["R"]
+    R_inv_var = loaded_data["R_inv_var"]
+    lorenz_config_settings = loaded_data["lorenz_config_settings"]
+    observation_config = loaded_data["observation_config"]
+
+    @info "loaded precomputed preliminary quantities from $(prelim_file)"
+else
+    t = 0.01
+    T_start = 4.0
+    T_end = T
+    @info "Computing preliminaries (spin-up, synthetic data, noise covariance, IC covariance)"
+    pdc = compute_perfect_data(
+        phi, nx,
+        LorenzConfig(t, 1000.0), rand(rng_i, Normal(0.0, 1.0), nx),
+        LorenzConfig(t, T), ObservationConfig(T_start, T_end);
+        R_inflation = inff,
+    )
+    x0                     = pdc.x0
+    y                      = pdc.y
+    lorenz_config_settings = pdc.lorenz_config_settings
+    observation_config     = pdc.observation_config
+    R                      = pdc.R
+    R_inv_var              = pdc.R_inv_var
+    ic_cov_sqrt            = pdc.ic_cov_sqrt
+
+    save_preliminaries(pdc, prelim_file)
+    @info "Saved computed quantities to $(prelim_file)"
+end
+
+
+########################################################################
+########################### Running EKI Race ###########################
+########################################################################
+
+conv_alg_iters = fill(NaN, 4, length(N_ens_sizes), length(rng_seeds))
+final_parameters = zeros(4, length(N_ens_sizes), length(rng_seeds), nu)
+final_model_output = zeros(4, length(N_ens_sizes), length(rng_seeds), ny)
+
+# method_names defined in experiment_config.jl
+
+for (rr, rng_seed) in enumerate(rng_seeds)
+    @info "Random seed: $(rng_seed)"
+    rng = MersenneTwister(rng_seed)
+
+    for (ee, N_ens) in enumerate(N_ens_sizes)
+        # initial parameters: N_params x N_ens
+        initial_params = construct_initial_ensemble(rng, prior, N_ens)
+        methods = [
+            Inversion(),
+#            TransformInversion(),
+#            GaussNewtonInversion(prior),
+#            Unscented(prior),
+        ]
+
+        @info "Ensemble size: $(N_ens)"
+        for (kk, method) in enumerate(methods)
+            @info "Method: $(nameof(typeof(method)))"
+            ekp_dt = 0.2
+            if isa(method, Unscented)
+                ekpobj = EKP.EnsembleKalmanProcess(
+                    y,
+                    R,
+                    deepcopy(method);
+                    rng = copy(rng),
+                    verbose = verbose_flag,
+#                    accelerator = DefaultAccelerator(),
+                    localization_method = NoLocalization(),
+                    #scheduler = DefaultScheduler(0.1),
+                    scheduler = DataMisfitController(terminate_at = terminate_at),
+                )
+            else
+                ekpobj = EKP.EnsembleKalmanProcess(
+                    initial_params,
+                    y,
+                    R,
+                    deepcopy(method);
+                    rng = copy(rng),
+                    verbose = verbose_flag,
+ #                   accelerator = DefaultAccelerator(),
+                    localization_method = NoLocalization(),
+                    scheduler = DataMisfitController(terminate_at = terminate_at),
+#                    scheduler = DefaultScheduler(0.1),
+                )
+            end
+            Ne = get_N_ens(ekpobj)
+
+            ens_mean_final = zeros(nu)
+            G_ens_mean_final = zeros(ny)
+            for i in 1:N_iter
+                params_i = get_ϕ_final(prior, ekpobj)
+
+                # Calculating RMSE_e (diagnostic; not used as stopping criterion)
+                ens_mean = mean(params_i, dims = 2)[:]
+                forcing = build_forcing(phi, ens_mean, phi_structure, sample_range)
+                G_ens_mean = lorenz_forward(
+                    forcing,
+                    x0 .+ ic_cov_sqrt * rand(rng, Normal(0.0, 1.0), nx, 1),
+                    lorenz_config_settings,
+                    observation_config,
+                )
+                RMSE_e = norm(R_inv_var * (y - G_ens_mean[:])) / sqrt(size(y, 1))
+                @info "RMSE (at G(u_mean)): $(RMSE_e)"
+                ens_mean_final = ens_mean
+                G_ens_mean_final = G_ens_mean[:]
+
+                G_ens = hcat(
+                    [
+                        lorenz_forward(
+                            build_forcing(phi, params_i[:, j], phi_structure, sample_range),
+                            (x0 .+ ic_cov_sqrt * rand(rng, Normal(0.0, 1.0), nx, Ne))[:, j],
+                            lorenz_config_settings,
+                            observation_config,
+                        ) for j in 1:Ne
+                    ]...,
+                )
+                terminated = EKP.update_ensemble!(ekpobj, G_ens)
+                if !isnothing(terminated)
+                    conv_alg_iters[kk, ee, rr] = i * Ne 
+                    break                    
+                end
+            end
+            final_parameters[kk, ee, rr, :] = ens_mean_final
+            final_model_output[kk, ee, rr, :] = G_ens_mean_final
+            if isnan(conv_alg_iters[kk, ee, rr]) # if didnt terminate
+                conv_alg_iters[kk, ee, rr] = N_iter * Ne 
+            end
+
+            final_ensemble = get_ϕ_final(prior, ekpobj)
+
+            # save ekp files
+            per_method_dir = joinpath(output_dir, calib_directory(nameof(typeof(method)), cfg))
+            if rr == 1 && ee == 1
+                if !isdir(per_method_dir)
+                    mkpath(per_method_dir)
+                end
+                JLD2.save(joinpath(per_method_dir, prior_filename(cfg)), "prior", prior)
+            end
+            if save_all_ekp
+                # JLD2
+                JLD2.save(
+                    joinpath(per_method_dir, ekp_filename(cfg, N_ens, rr)),
+                    "N_ens", N_ens,
+                    "method", method,
+                    "ekpobj", ekpobj,
+                )
+                u_stored = get_u(ekpobj, return_array = false)
+                g_stored = get_g(ekpobj, return_array = false)
+                JLD2.save(
+                    joinpath(per_method_dir, results_filename(cfg, N_ens, rr)),
+                    "y", y,
+                    "R", R,
+                    "inputs", u_stored,
+                    "outputs", g_stored,
+                    "truth_params_structure", (phi, phi_structure)
+                )
+            end
+            
+        end
+        
+    end
+end
+
+
+# Saving summary data:
+data_filename = joinpath(output_dir, summary_filename(cfg))
+JLD2.save(
+    data_filename,
+    "configuration",
+    configuration,
+    "method_names",
+    method_names,
+    "conv_alg_iters",
+    conv_alg_iters,
+    "final_parameters",
+    final_parameters,
+    "final_model_output",
+    final_model_output,
+)
