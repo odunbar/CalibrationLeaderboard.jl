@@ -226,7 +226,7 @@ function run_one(cfg, N_ens, rng_idx, prob)
         end
     end
 
-    @info "N_ens=$(N_ens)  rng_idx=$(rng_idx)  conv=$(conv_score)  ‖Δθ‖/‖θ₀‖=$(round(norm(θ - θ_init) / norm(θ_init), digits=4))"
+    @info "N_ens=$(N_ens)  rng_idx=$(rng_idx)  conv=$(conv_score)  ‖Δθ‖/‖θ₀‖=$(round(norm(θ - θ_init) / norm(θ_init); sigdigits=4))"
     return (; conv_score, final_params, final_output)
 end
 

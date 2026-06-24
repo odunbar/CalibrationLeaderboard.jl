@@ -4,7 +4,7 @@ using Dates
 ###############  USER TOGGLE  #########################################
 ########################################################################
 experiments = [:l63, :l96_const, :l96_vec, :l96_flux]
-EXPERIMENT = experiments[2]
+EXPERIMENT = experiments[3]
 
 # PIN this before submitting an array job:
 # run_date = Date("YYYY-MM-DD", "yyyy-mm-dd")
