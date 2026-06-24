@@ -84,7 +84,7 @@ function run_one(cfg, N_ens, rng_idx, problem)
     θ_init = copy(θ)
 
     # Adam hyperparameters
-    α  = 0.01   # step size
+    α  = 0.001   # step size
     β₁ = 0.9     # first-moment decay
     β₂ = 0.999   # second-moment decay
     ε  = 1e-8    # numerical stability
