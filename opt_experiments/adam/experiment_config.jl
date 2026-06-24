@@ -4,7 +4,7 @@ using Dates
 ###############  USER TOGGLE  #########################################
 ########################################################################
 experiments = [:l63, :l96_const, :l96_vec, :l96_flux]
-EXPERIMENT = experiments[2]
+EXPERIMENT = experiments[1]
 
 # PIN this before submitting an array job:
 # run_date = Date("YYYY-MM-DD", "yyyy-mm-dd")
@@ -16,7 +16,7 @@ run_date = today()
 function experiment_config(case::Symbol)
     n_repeats   = 20
     target_rmse = 1.2
-    N_iter      = 500   # Adam needs more iterations than LM
+    N_iter      = 10000   # Adam needs more iterations than LM
 
     if case == :l63
         return (

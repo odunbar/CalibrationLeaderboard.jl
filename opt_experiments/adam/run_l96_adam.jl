@@ -199,11 +199,11 @@ function run_one(cfg, N_ens, rng_idx, prob)
         end
 
         # ╔══════════════════════════════════════════════════════════════════════════╗
-        # ║  Adam step on L(θ) = ½ ‖r̃‖²                                           ║
-        # ║  Gradient: g = ∇L = -J̃ᵀ r̃                                             ║
-        # ║  m_t = β₁ m_{t-1} + (1-β₁) g_t          (first moment)               ║
-        # ║  v_t = β₂ v_{t-1} + (1-β₂) g_t²         (second moment)              ║
-        # ║  θ_{t+1} = θ_t - α m̂_t / (√v̂_t + ε)    (bias-corrected update)      ║
+        # ║  Adam step on L(θ) = ½ ‖r̃‖²                                              ║
+        # ║  Gradient: g = ∇L = -J̃ᵀ r̃                                                ║
+        # ║  m_t = β₁ m_{t-1} + (1-β₁) g_t          (first moment)                   ║
+        # ║  v_t = β₂ v_{t-1} + (1-β₂) g_t²         (second moment)                  ║
+        # ║  θ_{t+1} = θ_t - α m̂_t / (√v̂_t + ε)    (bias-corrected update)           ║
         # ╚══════════════════════════════════════════════════════════════════════════╝
         g  = -(J̃' * r̃)
         m  = β₁ * m + (1 - β₁) * g
