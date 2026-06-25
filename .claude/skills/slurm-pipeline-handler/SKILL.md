@@ -88,18 +88,26 @@ These are parameterized in every sbatch template:
 When adapting for a different cluster, only these settings change — the Julia
 script invocation and dependency chain stay the same.
 
-## Pin calibrate_date before submitting
+## Pin the run date before submitting
 
-In `experiment_config.jl`, comment out `calibrate_date = today()` and pin it:
+In `experiment_config.jl`, comment out the `today()` line and pin the date:
 ```julia
+# UQ experiments use calibrate_date:
 calibrate_date = Date("2026-06-04", "yyyy-mm-dd")
+
+# OPT experiments use run_date:
+run_date = Date("2026-06-25", "yyyy-mm-dd")
 ```
 This ensures all array tasks write into the same output directory even when
 jobs run past midnight or across days. The submit scripts should remind users:
 
 ```bash
 echo "NOTE: This script does not precompile. Run bash submit_precompile.sh first."
+echo "NOTE: Pin run_date in experiment_config.jl before submitting."
 ```
+
+For OPT, the HPC-pinned config lives in `hpc-variant/experiment_config.jl` (separate from
+the local `experiment_config.jl` which keeps `today()`). Pin the date there before submitting.
 
 ## Precompile job — always separate
 
@@ -122,22 +130,77 @@ user to run it first. This avoids dozens of array tasks racing to precompile.
 
 See `references/pipeline-uq.md` for the full dependency graph and sbatch table.
 
-### OPT pipeline (new — does not exist yet)
+### OPT pipeline
 
-The OPT experiments currently have no SLURM support. When adding it:
+`opt_experiments/adam/hpc-variant/` is the canonical reference for OPT pipelines —
+it was built first and follows the patterns below. When adding SLURM to a new OPT method:
 
-1. Each `run_l63_<method>.jl` and `run_l96_<method>.jl` must be updated to
-   use `task_index_from_args()` + `l96_experiment()` (they currently use hard-coded
-   `case = cases[N]`).
-2. Create an `experiment_config.jl` for the method (or wire to `common/config/`
-   once that exists — see [[common-handler]]).
-3. Array sbatch = one task per `(N_ens, rng_idx)` cell.
-4. After the array completes, a single `leaderboard.sbatch` job runs
+1. Check whether the run scripts already have `task_index_from_args()`, `l96_experiment()`,
+   and `flat_tasks()` in their `main()`. If not, add them (see the core design principle
+   above). Adam already has these; older methods (EKP, CBO) may not.
+2. Create `experiment_config.jl` in the method directory with `run_date = today()`.
+3. Create `hpc-variant/` — put only sbatch + submit files + `experiment_config.jl` there
+   (see "OPT hpc-variant layout" section below — do NOT copy the run scripts).
+4. Array sbatch = one task per `(N_ens, rng_idx)` cell.
+5. After the array completes, a single `leaderboard.sbatch` job runs
    `run_to_leaderboard.jl` (saves netcdf via `write_results_nc`).
-5. `submit_l63.sh`: `run_array` →(afterok)→ `leaderboard`.
-6. `submit_l96_<case>.sh`: same pattern with `EXPERIMENT=l96_const|l96_vec|l96_flux`.
+6. `submit_l63.sh`: `run_array` →(afterok)→ `leaderboard`.
+7. `submit_l96_<case>.sh`: same pattern with `EXPERIMENT=l96_const|l96_vec|l96_flux`.
 
 See `references/pipeline-opt.md` for the dependency graph and stage table.
+
+## OPT hpc-variant layout: avoid copying scripts
+
+OPT run scripts use `@__DIR__` for `common/` includes but bare `include("experiment_config.jl")`
+for config. This asymmetry lets you avoid copying scripts into `hpc-variant/`:
+
+```
+adam/
+├── experiment_config.jl      ← local (run_date = today())
+├── run_l63_adam.jl           ← NOT copied; stays here
+├── run_l96_adam.jl
+├── run_to_leaderboard.jl
+└── hpc-variant/
+    ├── experiment_config.jl  ← HPC version (pin run_date here)
+    ├── run_array.sbatch
+    ├── leaderboard.sbatch
+    ├── precompile.sbatch
+    ├── submit_precompile.sh
+    ├── submit_l63.sh
+    └── submit_l96_*.sh
+```
+
+**The trick — submit from `hpc-variant/`, run scripts from `adam/`:**
+
+In every OPT sbatch file:
+```bash
+cd "${SLURM_SUBMIT_DIR}"   # = hpc-variant/ (set by SLURM to submission directory)
+julia --project=.. "../${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
+```
+
+Why each part matters:
+- `cd "${SLURM_SUBMIT_DIR}"` → pwd = `hpc-variant/`, so `include("experiment_config.jl")`
+  inside the script picks up the HPC-pinned version in `hpc-variant/` ✓
+- `--project=..` → uses `adam/Project.toml` (one level up) ✓
+- `"../${SCRIPT}"` → Julia sees the script at its real location (`adam/`), so `@__DIR__`
+  inside the script resolves to `adam/`, keeping `../../common` paths correct ✓
+
+**Log paths** for OPT sbatch files use `../output/slurm/` (not `output/slurm/`):
+```bash
+#SBATCH --output=../output/slurm/run_%A_%a.out
+```
+
+**Submit scripts** use `mkdir -p ../output/slurm` and can `cd "$DIR"` where `$DIR` is
+the `hpc-variant/` directory (sbatch is submitted from there):
+```bash
+DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DIR"
+mkdir -p ../output/slurm
+```
+
+**For UQ experiments**, this trick is not needed — the UQ `hpc-variant/` has its own
+copies of all scripts with adjusted `../../../common` paths (3 levels vs OPT's 2). When
+working on UQ, follow `calibrate_emulate_sample/hpc-variant/` as the template instead.
 
 ## Adjusting array size
 

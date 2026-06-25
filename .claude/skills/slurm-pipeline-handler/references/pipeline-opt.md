@@ -3,13 +3,16 @@
 The OPT experiments (`opt_experiments/`) currently have **no SLURM support**.
 This document specifies the target pipeline to build, modeled on the UQ example.
 
-## Current state (as of 2026-06-22)
+## Current state (as of 2026-06-25)
 
 | Experiment | Local scripts | SLURM | experiment_config.jl |
 |---|---|---|---|
+| `adam/` | run_l63_adam.jl, run_l96_adam.jl, run_to_leaderboard.jl | ✅ hpc-variant/ | ✅ |
 | `ensemble_kalman_processes/` | run_l63_example.jl, run_l96_example.jl | ❌ | ❌ |
 | `consensus_based_optimization/` | run_l63_example_cbo.jl, run_l96_example_cbo.jl | ❌ | ❌ |
 | `batch_stochastic_gradient_descent/` | — (empty) | ❌ | ❌ |
+
+`opt_experiments/adam/hpc-variant/` is the canonical OPT pipeline reference.
 
 ## Target dependency graph
 
@@ -51,7 +54,8 @@ Array upper bound: `length(N_ens_sizes) * n_repeats`
 
 ## Prerequisites before adding SLURM to an OPT experiment
 
-The existing run scripts need these two changes first:
+Use `opt_experiments/adam/` as the canonical example — it has everything in place.
+The existing run scripts for EKP and CBO need these changes first:
 
 ### 1. Add experiment_config.jl (or wire to common/config/)
 
@@ -119,3 +123,42 @@ EXPERIMENT=l96_vec julia --project=. run_l96_<method>.jl 5
 # Leaderboard (after all cells have run):
 julia --project=. run_to_leaderboard.jl
 ```
+
+## hpc-variant/ layout for OPT (adam is the canonical example)
+
+OPT run scripts use `@__DIR__` for `common/` includes but a bare `include("experiment_config.jl")`
+for config. This means you do NOT need to copy scripts into `hpc-variant/`. Instead:
+
+**Directory structure:**
+```
+<method>/
+├── experiment_config.jl      ← local version (run_date = today())
+├── run_l63_<method>.jl       ← stays here; NOT copied to hpc-variant/
+├── run_l96_<method>.jl
+├── run_to_leaderboard.jl
+└── hpc-variant/
+    ├── experiment_config.jl  ← HPC version (pin run_date before submitting)
+    ├── run_array.sbatch
+    ├── leaderboard.sbatch
+    ├── precompile.sbatch
+    ├── submit_precompile.sh
+    ├── submit_l63.sh
+    └── submit_l96_*.sh
+```
+
+**sbatch invocation pattern** (submit from `hpc-variant/`, run from `<method>/`):
+```bash
+cd "${SLURM_SUBMIT_DIR}"                              # = hpc-variant/
+julia --project=.. "../${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
+```
+
+- `pwd = hpc-variant/` → bare `include("experiment_config.jl")` picks up HPC-pinned config ✓
+- `@__DIR__ = <method>/` (script's real location) → `../../common` paths resolve correctly ✓
+- `--project=..` → uses `<method>/Project.toml` ✓
+
+**Log paths** in OPT sbatch must use `../output/slurm/` (not `output/slurm/`):
+```
+#SBATCH --output=../output/slurm/run_%A_%a.out
+```
+
+**Submit scripts** do `mkdir -p ../output/slurm` and submit sbatch from within `hpc-variant/`.
