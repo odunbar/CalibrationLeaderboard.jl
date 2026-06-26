@@ -16,17 +16,24 @@ This document specifies the target pipeline to build, modeled on the UQ example.
 
 ## Target dependency graph
 
-### L63 opt pipeline
+### L63 opt pipeline (with shared preliminaries)
 ```
-run_array  ─(afterok)→  leaderboard
+preliminaries  ─(afterok)→  run_array  ─(afterok)→  leaderboard
 ```
-(run_array = per-(N_ens, rng_idx) cell; leaderboard = write_results_nc, all cells)
+(preliminaries = single serial job; run_array = per-(N_ens, rng_idx) cell; leaderboard = write_results_nc, all cells)
 
-### L96 opt pipeline
+### L96 opt pipeline (with shared preliminaries)
+```
+preliminaries  ─(afterok)→  run_array  ─(afterok)→  leaderboard
+```
+(same, with EXPERIMENT=l96_const|l96_vec|l96_flux on both preliminaries and run_array)
+
+The `preliminaries` pre-stage is needed when run scripts share expensive setup (truth
+data, obs covariance, ICs) that would create a race condition if each array task computed
+it independently. Without shared setup, omit `preliminaries` and use:
 ```
 run_array  ─(afterok)→  leaderboard
 ```
-(same, with EXPERIMENT=l96_const|l96_vec|l96_flux on the array job)
 
 There is no multi-stage dependency here (unlike UQ's calibrate→emulate→pushforward
 chain) because OPT methods run to completion in a single pass.
@@ -35,6 +42,7 @@ chain) because OPT methods run to completion in a single pass.
 
 | File | Type | Description |
 |---|---|---|
+| `preliminaries.sbatch` | single job | Compute and save shared setup (truth data, obs cov, ICs); omit if no shared setup |
 | `run_array.sbatch` | array `1-N%100` | One task per `(N_ens, rng_idx)` cell; model-agnostic via SCRIPT env var |
 | `leaderboard.sbatch` | single job | Runs write_results_nc over all cells; depends on run_array |
 | `precompile.sbatch` | single job | `Pkg.instantiate()` + `Pkg.precompile()` |
@@ -47,10 +55,12 @@ Array upper bound: `length(N_ens_sizes) * n_repeats`
 | Script | Chains |
 |---|---|
 | `submit_precompile.sh [EXP_ID]` | precompile.sbatch only |
-| `submit_l63.sh [EXP_ID]` | run_array(SCRIPT=run_l63_<method>.jl) →(afterok)→ leaderboard |
-| `submit_l96_const.sh [EXP_ID]` | run_array(SCRIPT=run_l96_<method>.jl, EXPERIMENT=l96_const) →(afterok)→ leaderboard |
+| `submit_l63.sh [EXP_ID]` | preliminaries(l63) →(afterok)→ run_array(l63) →(afterok)→ leaderboard |
+| `submit_l96_const.sh [EXP_ID]` | preliminaries(l96_const) →(afterok)→ run_array(l96_const) →(afterok)→ leaderboard |
 | `submit_l96_vec.sh [EXP_ID]` | same with EXPERIMENT=l96_vec |
 | `submit_l96_flux.sh [EXP_ID]` | same with EXPERIMENT=l96_flux |
+
+(Omit the `preliminaries` step for methods that have no shared expensive setup.)
 
 ## Prerequisites before adding SLURM to an OPT experiment
 
@@ -112,6 +122,10 @@ methods this way from the start.
 ## Serial (local) invocation for OPT
 
 ```bash
+# If the method uses shared preliminaries, run this first:
+julia --project=. l63_preliminaries.jl
+EXPERIMENT=l96_const julia --project=. l96_preliminaries.jl
+
 # All cells:
 julia --project=. run_l63_<method>.jl
 EXPERIMENT=l96_const julia --project=. run_l96_<method>.jl
@@ -129,15 +143,18 @@ julia --project=. run_to_leaderboard.jl
 OPT run scripts use `@__DIR__` for `common/` includes but a bare `include("experiment_config.jl")`
 for config. This means you do NOT need to copy scripts into `hpc-variant/`. Instead:
 
-**Directory structure:**
+**Directory structure (with shared preliminaries — adam is the canonical example):**
 ```
 <method>/
-├── experiment_config.jl      ← local version (run_date = today())
-├── run_l63_<method>.jl       ← stays here; NOT copied to hpc-variant/
+├── experiment_config.jl         ← local version (run_date = today())
+├── l63_preliminaries.jl         ← compute/save shared L63 setup once before array
+├── l96_preliminaries.jl         ← same for L96; case via EXPERIMENT env var
+├── run_l63_<method>.jl          ← stays here; NOT copied to hpc-variant/
 ├── run_l96_<method>.jl
 ├── run_to_leaderboard.jl
 └── hpc-variant/
-    ├── experiment_config.jl  ← HPC version (pin run_date before submitting)
+    ├── experiment_config.jl     ← HPC version (pin run_date before submitting)
+    ├── preliminaries.sbatch     ← single serial pre-stage job
     ├── run_array.sbatch
     ├── leaderboard.sbatch
     ├── precompile.sbatch
@@ -145,6 +162,10 @@ for config. This means you do NOT need to copy scripts into `hpc-variant/`. Inst
     ├── submit_l63.sh
     └── submit_l96_*.sh
 ```
+
+**Without shared preliminaries** (method has no expensive shared setup), omit the
+`l*_preliminaries.jl` scripts and `preliminaries.sbatch` entirely — the layout and
+chains revert to the simpler `run_array →(afterok)→ leaderboard` form.
 
 **sbatch invocation pattern** (submit from `hpc-variant/`, run from `<method>/`):
 ```bash

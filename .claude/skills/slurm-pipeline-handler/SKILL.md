@@ -12,7 +12,8 @@ description: >-
   the SLURM pipeline structure; or debug job dependency failures.
   Trigger even when the user says "add HPC support", "make it run on the cluster",
   "create sbatch files", "set up slurm for opt", "chain the jobs", "my array
-  size is wrong", or "how do I submit on Resnick".
+  size is wrong", "how do I submit on Resnick", "separate out preliminaries",
+  "race condition on the prelim file", or "pre-stage before the array job".
 ---
 
 # SLURM Pipeline Handler
@@ -115,6 +116,138 @@ the local `experiment_config.jl` which keeps `today()`). Pin the date there befo
 The `submit_l*.sh` scripts **never** submit a precompile — they only remind the
 user to run it first. This avoids dozens of array tasks racing to precompile.
 
+## Serial pre-stage job (preliminaries pattern)
+
+When run scripts share expensive setup that all array tasks need — computing truth data,
+obs covariances, initial conditions — that setup creates a race condition if left inside
+the run script with a "compute-if-missing" guard: multiple array tasks may start
+simultaneously and all try to write the same file.
+
+The fix: extract the setup into a dedicated `l*_preliminaries.jl` script and run it
+as a single serial SLURM job before the array starts.
+
+### When to apply
+
+Look for a `build_*_problem()` function (or equivalent) that contains:
+```julia
+if isfile(prelim_file)
+    ld = load_preliminaries(prelim_file)
+else
+    pdc = compute_perfect_data(...)
+    save_preliminaries(pdc, prelim_file)
+end
+```
+That guard is a local-run convenience that becomes a race condition on HPC.
+Extract the `else` branch into its own script.
+
+### The three-part change
+
+**1. Create `l63_preliminaries.jl` / `l96_preliminaries.jl` (in `<method>/`)**
+
+The script computes and saves unconditionally — no existence check:
+
+```julia
+function main()
+    rng_i = MersenneTwister(11)    # fixed seed for reproducibility
+    # ... same setup as the old else-branch in build_*_problem ...
+    pdc = compute_perfect_data(...)
+    save_preliminaries(pdc, prelim_file)
+    @info "Saved preliminaries to $prelim_file"
+end
+main()
+```
+
+For L96, use `l96_experiment()` and `experiment_config(experiment).force_case` to
+select the case — the same env-var dispatch as the run scripts, so
+`EXPERIMENT=l96_const julia --project=. l96_preliminaries.jl` works locally too.
+
+**2. Simplify `build_*_problem()` in the run scripts to load-or-error**
+
+```julia
+function build_l63_problem(output_dir)
+    prelim_file = joinpath(output_dir, "l63_computed_preliminaries.jld2")
+    isfile(prelim_file) || error("Prelim file not found: $prelim_file\nRun l63_preliminaries.jl first.")
+    ld = load_preliminaries(prelim_file)
+    @info "Loaded L63 preliminaries from $prelim_file"
+    return (; x0 = ld.x0, y = ld.y, R = ld.R, R_inv_var = ld.R_inv_var,
+              ic_cov_sqrt = ld.ic_cov_sqrt,
+              lorenz_cfg  = ld.lorenz_config_settings,
+              obs_cfg     = ld.observation_config, nx = 3)
+end
+```
+
+Any per-task setup (prior distributions, forcing parameters, NN structure) stays in
+`build_*_problem()` — only the shared expensive computation moves to the prelim script.
+
+**3. Create `hpc-variant/preliminaries.sbatch`**
+
+Mirror `leaderboard.sbatch` — single job, no array, same `cd ${SLURM_SUBMIT_DIR}` path trick:
+
+```bash
+#SBATCH --job-name=prelim_<method>
+#SBATCH --output=../output/slurm/prelim_%j.out
+#SBATCH --error=../output/slurm/prelim_%j.err
+#SBATCH --time=00:30:00
+#SBATCH --mem=8G
+#SBATCH --cpus-per-task=1
+#SBATCH --ntasks=1
+#SBATCH --constraint=cascadelake
+
+SCRIPT=${SCRIPT:-l63_preliminaries.jl}
+cd "${SLURM_SUBMIT_DIR}"
+export JULIA_PKG_PRECOMPILE_AUTO=0
+julia --project=.. "../${SCRIPT}"
+```
+
+Unlike `run_array.sbatch`, there is **no** `"${SLURM_ARRAY_TASK_ID}"` argument —
+the prelim script runs once over the whole problem, not once per cell.
+
+### Updated submit chain with preliminaries
+
+```
+preliminaries  →(afterok)→  run_array  →(afterok)→  leaderboard
+```
+
+In each `submit_l*.sh`, submit `preliminaries.sbatch` first and chain `run_array` off it:
+
+```bash
+PRELIM_JID=$(sbatch --parsable \
+                    -A esm \
+                    --job-name="prelim_${LABEL}" \
+                    --export=ALL,SCRIPT=l63_preliminaries.jl,EXPERIMENT=l63 \
+                    preliminaries.sbatch)
+echo "  preliminaries job ID: ${PRELIM_JID}"
+
+RUN_JID=$(sbatch --parsable \
+                 -A esm \
+                 --job-name="run_${LABEL}" \
+                 --dependency=afterok:${PRELIM_JID} \
+                 --kill-on-invalid-dep=yes \
+                 --export=ALL,SCRIPT=run_l63_<method>.jl,EXPERIMENT=l63 \
+                 run_array.sbatch)
+```
+
+### Updated hpc-variant layout (when preliminaries are present)
+
+```
+<method>/
+├── experiment_config.jl         ← local (run_date = today())
+├── l63_preliminaries.jl         ← runs once before l63 array
+├── l96_preliminaries.jl         ← case selected via EXPERIMENT env var
+├── run_l63_<method>.jl
+├── run_l96_<method>.jl
+├── run_to_leaderboard.jl
+└── hpc-variant/
+    ├── experiment_config.jl     ← HPC version (pin run_date here)
+    ├── preliminaries.sbatch     ← single serial pre-stage job
+    ├── run_array.sbatch
+    ├── leaderboard.sbatch
+    ├── precompile.sbatch
+    ├── submit_precompile.sh
+    ├── submit_l63.sh
+    └── submit_l96_*.sh
+```
+
 ## Creating a pipeline for a new experiment
 
 ### UQ pipeline (follow calibrate_emulate_sample as template)
@@ -144,8 +277,12 @@ it was built first and follows the patterns below. When adding SLURM to a new OP
 4. Array sbatch = one task per `(N_ens, rng_idx)` cell.
 5. After the array completes, a single `leaderboard.sbatch` job runs
    `run_to_leaderboard.jl` (saves netcdf via `write_results_nc`).
-6. `submit_l63.sh`: `run_array` →(afterok)→ `leaderboard`.
-7. `submit_l96_<case>.sh`: same pattern with `EXPERIMENT=l96_const|l96_vec|l96_flux`.
+6. If the run scripts share expensive setup (truth data, obs covariance, ICs), apply
+   the **serial pre-stage pattern**: create `l*_preliminaries.jl` scripts and
+   `preliminaries.sbatch`. See the "Serial pre-stage job" section above.
+7. `submit_l63.sh` (with prelims): `preliminaries` →(afterok)→ `run_array` →(afterok)→ `leaderboard`.
+   Without prelims: `run_array` →(afterok)→ `leaderboard`.
+8. `submit_l96_<case>.sh`: same pattern with `EXPERIMENT=l96_const|l96_vec|l96_flux`.
 
 See `references/pipeline-opt.md` for the dependency graph and stage table.
 
