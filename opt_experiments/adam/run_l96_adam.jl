@@ -29,12 +29,9 @@ include("experiment_config.jl")
 ###############  Case-specific problem setup  #########################
 ########################################################################
 
-function build_l96_problem(case::String, output_dir::String; rng_seed_init = 11)
-    rng_i = MersenneTwister(rng_seed_init)
-    t     = 0.01
-
+function build_l96_problem(case::String, output_dir::String)
     if case == "const-force"
-        nx = 40; T = 14.0; T_start = 4.0; inff = 2.0
+        nx = 40
         phi = ConstantEMC(8.0)
         phi_structure  = nothing
         sample_range   = nothing
@@ -45,7 +42,7 @@ function build_l96_problem(case::String, output_dir::String; rng_seed_init = 11)
         prior_cov  = diagm([0.4^2])
 
     elseif case == "vec-force"
-        nx = 40; T = 54.0; T_start = 4.0; inff = 2.0
+        nx = 40
         pl = 2.0; psig = 3.0
         sinusoid = 8 .+ 6 * sin.((4 * π * range(0, stop = nx - 1, step = 1)) / nx)
         phi = VectorEMC(sinusoid)
@@ -56,7 +53,7 @@ function build_l96_problem(case::String, output_dir::String; rng_seed_init = 11)
         prior_cov  = [psig^2 * exp(-abs(i - j) / pl) for i in 1:nx, j in 1:nx]
 
     elseif case == "flux-force"
-        nx = 100; T = 54.0; T_start = 4.0; inff = 2.5
+        nx = 100
         true_sinusoid(x) = 8 .+ 6 * sin.((4 * π * x) / 10)
         x_train = collect(-5.0:0.01:5.0)
         y_train = true_sinusoid.(x_train) .+ 0.2 .* randn(length(x_train))
@@ -77,39 +74,18 @@ function build_l96_problem(case::String, output_dir::String; rng_seed_init = 11)
     end
 
     ny = 2 * nx
-    T_long = 1000.0
-    lorenz_cfg = LorenzConfig(t, T)
-    obs_cfg    = ObservationConfig(T_start, T)
 
     prelim_file = joinpath(output_dir, "l96_computed_preliminaries_$(case).jld2")
-    if isfile(prelim_file)
-        ld          = load_preliminaries(prelim_file)
-        x0          = ld.x0
-        y           = ld.y
-        R           = ld.R
-        R_inv_var   = ld.R_inv_var
-        ic_cov_sqrt = ld.ic_cov_sqrt
-        lorenz_cfg  = ld.lorenz_config_settings
-        obs_cfg     = ld.observation_config
-        @info "Loaded precomputed preliminaries from $prelim_file"
-    else
-        x_initial = rand(rng_i, Normal(0.0, 1.0), nx)
-        pdc = compute_perfect_data(
-            phi, nx,
-            LorenzConfig(t, T_long), x_initial,
-            lorenz_cfg, obs_cfg;
-            R_inflation = inff,
-        )
-        x0          = pdc.x0
-        y           = pdc.y
-        R           = pdc.R
-        R_inv_var   = pdc.R_inv_var
-        ic_cov_sqrt = pdc.ic_cov_sqrt
-        lorenz_cfg  = pdc.lorenz_config_settings
-        obs_cfg     = pdc.observation_config
-        save_preliminaries(pdc, prelim_file)
-        @info "Saved preliminaries to $prelim_file"
-    end
+    isfile(prelim_file) || error("Prelim file not found: $prelim_file\nRun l96_preliminaries.jl first.")
+    ld          = load_preliminaries(prelim_file)
+    x0          = ld.x0
+    y           = ld.y
+    R           = ld.R
+    R_inv_var   = ld.R_inv_var
+    ic_cov_sqrt = ld.ic_cov_sqrt
+    lorenz_cfg  = ld.lorenz_config_settings
+    obs_cfg     = ld.observation_config
+    @info "Loaded L96 ($case) preliminaries from $prelim_file"
 
     return (; x0, y, R, R_inv_var, ic_cov_sqrt, lorenz_cfg, obs_cfg, nx, ny,
               nu, prior_mean, prior_cov, phi, phi_structure, sample_range, case)

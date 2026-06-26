@@ -1,6 +1,6 @@
 #!/bin/bash
 # Submit the adam L96 const-force pipeline.
-# Dependency chain: run_array →(afterok)→ leaderboard
+# Dependency chain: preliminaries →(afterok)→ run_array →(afterok)→ leaderboard
 #
 # Usage: bash submit_l96_const.sh [EXP_ID]
 #   EXP_ID (optional): label appended to SLURM job names,
@@ -20,10 +20,20 @@ echo "      if you haven't done so recently (e.g. after a fresh checkout or pack
 echo "NOTE: Pin run_date in experiment_config.jl before submitting to ensure all"
 echo "      array tasks write to the same output directory."
 
-echo "=== Submitting run_array (L96 const-force, adam) ==="
+echo "=== Submitting preliminaries (L96 const-force) ==="
+PRELIM_JID=$(sbatch --parsable \
+                    -A esm \
+                    --job-name="prelim_${LABEL}" \
+                    --export=ALL,SCRIPT=l96_preliminaries.jl,EXPERIMENT=l96_const \
+                    preliminaries.sbatch)
+echo "  preliminaries job ID: ${PRELIM_JID}"
+
+echo "=== Submitting run_array (L96 const-force, adam, after ${PRELIM_JID}) ==="
 RUN_JID=$(sbatch --parsable \
                  -A esm \
                  --job-name="run_${LABEL}" \
+                 --dependency=afterok:${PRELIM_JID} \
+                 --kill-on-invalid-dep=yes \
                  --export=ALL,SCRIPT=run_l96_adam.jl,EXPERIMENT=l96_const \
                  run_array.sbatch)
 echo "  run_array job ID: ${RUN_JID}"
