@@ -237,7 +237,7 @@ function save_preliminaries(pdc::PerfectDataConfig, filepath::AbstractString)
         "R",                      pdc.R,
         "R_inv_var",              pdc.R_inv_var,
     )
-    mv(tmpfile, filepath)
+    mv(tmpfile, filepath, force=true)
 end
 
 function load_preliminaries(filepath::AbstractString)
