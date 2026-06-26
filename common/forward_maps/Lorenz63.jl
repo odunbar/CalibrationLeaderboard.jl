@@ -227,6 +227,7 @@ end
 
 function save_preliminaries(pdc::PerfectDataConfig, filepath::AbstractString)
     tmpfile = splitext(filepath)[1] * ".tmp.$(getpid()).jld2"
+    
     JLD2.save(
         tmpfile,
         "x0",                     pdc.x0,
@@ -237,7 +238,11 @@ function save_preliminaries(pdc::PerfectDataConfig, filepath::AbstractString)
         "R",                      pdc.R,
         "R_inv_var",              pdc.R_inv_var,
     )
-    mv(tmpfile, filepath, force=true)
+    if !isfile(filepath)
+        mv(tmpfile, filepath)
+    else
+        rm(tmpfile)
+    end
 end
 
 function load_preliminaries(filepath::AbstractString)
