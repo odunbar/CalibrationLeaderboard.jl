@@ -72,9 +72,89 @@ EXPERIMENT=l96_flux  julia --project=. run_to_leaderboard.jl
 
 ## HPC (SLURM)
 
-See `slurm-pipeline-handler` to generate sbatch files.
-Array upper bound = `length(N_ens_sizes) × n_repeats` (update when those
-change in `experiment_config.jl`).
+All HPC files live in `hpc-variant/`. Run every command below from that
+directory.
+
+### Before the first submission (or after any package update)
+
+```bash
+cd hpc-variant/
+bash submit_precompile.sh
+```
+
+Wait for the precompile job to finish before launching array jobs (`squeue -u $USER`).
+
+### Before every batch submission
+
+**1. Pin the run date** in `hpc-variant/experiment_config.jl` so all array
+tasks write to the same output directory even when jobs span midnight:
+
+```julia
+# hpc-variant/experiment_config.jl
+run_date = Date("2026-06-25", "yyyy-mm-dd")   # replace with today's date
+```
+
+**2. Verify the array size** in `hpc-variant/run_array.sbatch` matches
+`length(N_ens_sizes) × n_repeats` from `experiment_config.jl`:
+
+```
+#SBATCH --array=1-20%100   # must equal length(N_ens_sizes) * n_repeats
+```
+
+With the current defaults (`N_ens_sizes = [1]`, `n_repeats = 20`) the bound
+is `1 × 20 = 20`. If you change either value in `experiment_config.jl`, update
+`--array` to match — mismatched bounds will either skip cells or submit
+out-of-range task IDs that fail immediately.
+
+> **Note:** there are two `experiment_config.jl` files — `adam/experiment_config.jl`
+> (used for local runs) and `hpc-variant/experiment_config.jl` (used by SLURM
+> jobs). Edit `hpc-variant/experiment_config.jl` for HPC submissions. Keep both
+> in sync when changing `n_repeats` or `N_ens_sizes`.
+
+### Submitting
+
+```bash
+cd hpc-variant/
+
+# L63
+bash submit_l63.sh
+
+# L96 cases (submit independently; all can run concurrently)
+bash submit_l96_const.sh
+bash submit_l96_vec.sh
+bash submit_l96_flux.sh
+```
+
+An optional `EXP_ID` label keeps the queue readable when running multiple
+batches simultaneously:
+
+```bash
+bash submit_l63.sh run2   # jobs appear as run_l63_run2, leaderboard_l63_run2
+```
+
+Each `submit_x.sh` chains two SLURM jobs automatically:
+
+```
+run_array (--array=1-N) →(afterok)→ leaderboard (single task)
+```
+
+The leaderboard job is cancelled automatically (`--kill-on-invalid-dep=yes`)
+if any array task fails.
+
+### Smoke test (single task before full submission)
+
+```bash
+cd hpc-variant/
+sbatch --array=1-1 --export=ALL,SCRIPT=run_l63_adam.jl,EXPERIMENT=l63 run_array.sbatch
+```
+
+### Monitoring
+
+```bash
+squeue -u $USER                       # live queue
+cat ../output/slurm/run_<JOBID>_<TASKID>.out   # stdout for a specific task
+cat ../output/slurm/run_<JOBID>_<TASKID>.err   # stderr / errors
+```
 
 ## Pipeline
 
