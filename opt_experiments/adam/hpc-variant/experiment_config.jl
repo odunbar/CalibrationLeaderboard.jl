@@ -15,49 +15,45 @@ run_date = today()
 ###############  PER-CASE CONFIG  #####################################
 ########################################################################
 function experiment_config(case::Symbol)
-    n_repeats   = 20
-    target_rmse = 1.2
-    N_iter      = 10000   # Adam needs more iterations than LM
+    n_repeats    = 20
+    rmse_targets = [1.0, 1.1, 1.2]
+    N_iter       = 10000   # Adam needs more iterations than LM
 
     if case == :l63
         return (
-            model       = "l63",
-            force_case  = nothing,
-            N_ens_sizes = [1],   # IC-averaging samples; 1 = noisy gradient, larger = smoother
-            n_repeats   = n_repeats,
-            N_iter      = N_iter,
-            target_rmse = target_rmse,
-            run_date    = run_date,
+            model        = "l63",
+            force_case   = nothing,
+            rmse_targets = rmse_targets,
+            n_repeats    = n_repeats,
+            N_iter       = N_iter,
+            run_date     = run_date,
         )
     elseif case == :l96_const
         return (
-            model       = "l96",
-            force_case  = "const-force",
-            N_ens_sizes = [1],
-            n_repeats   = n_repeats,
-            N_iter      = N_iter,
-            target_rmse = target_rmse,
-            run_date    = run_date,
+            model        = "l96",
+            force_case   = "const-force",
+            rmse_targets = rmse_targets,
+            n_repeats    = n_repeats,
+            N_iter       = N_iter,
+            run_date     = run_date,
         )
     elseif case == :l96_vec
         return (
-            model       = "l96",
-            force_case  = "vec-force",
-            N_ens_sizes = [1],
-            n_repeats   = n_repeats,
-            N_iter      = N_iter,
-            target_rmse = target_rmse,
-            run_date    = run_date,
+            model        = "l96",
+            force_case   = "vec-force",
+            rmse_targets = rmse_targets,
+            n_repeats    = n_repeats,
+            N_iter       = N_iter,
+            run_date     = run_date,
         )
     elseif case == :l96_flux
         return (
-            model       = "l96",
-            force_case  = "flux-force",
-            N_ens_sizes = [1],
-            n_repeats   = n_repeats,
-            N_iter      = N_iter,
-            target_rmse = target_rmse,
-            run_date    = run_date,
+            model        = "l96",
+            force_case   = "flux-force",
+            rmse_targets = rmse_targets,
+            n_repeats    = n_repeats,
+            N_iter       = N_iter,
+            run_date     = run_date,
         )
     else
         throw(ArgumentError("Unknown experiment: $case"))
@@ -67,12 +63,13 @@ end
 ########################################################################
 ###############  FILENAME BUILDERS  ###################################
 ########################################################################
-function case_suffix(cfg, N_ens, rng_idx)
-    cfg.force_case === nothing ? "$(N_ens)_$(rng_idx)" : "$(cfg.force_case)_$(N_ens)_$(rng_idx)"
+function case_suffix(cfg, rmse_target, rng_idx)
+    tgt = replace(string(rmse_target), "." => "p")
+    cfg.force_case === nothing ? "$(tgt)_$(rng_idx)" : "$(cfg.force_case)_$(tgt)_$(rng_idx)"
 end
 
-function result_filename(cfg, N_ens, rng_idx)
-    "$(cfg.model)_adam_result_$(case_suffix(cfg, N_ens, rng_idx))_$(cfg.run_date).jld2"
+function result_filename(cfg, rmse_target, rng_idx)
+    "$(cfg.model)_adam_result_$(case_suffix(cfg, rmse_target, rng_idx))_$(cfg.run_date).jld2"
 end
 
 function nc_filename(cfg)
@@ -87,7 +84,7 @@ end
 ###############  ARRAY-JOB HELPERS  ###################################
 ########################################################################
 flat_tasks(cfg) =
-    [(N_ens, rng_idx) for N_ens in cfg.N_ens_sizes for rng_idx in 1:cfg.n_repeats]
+    [(rmse_target, rng_idx) for rmse_target in cfg.rmse_targets for rng_idx in 1:cfg.n_repeats]
 
 function task_index_from_args()
     if haskey(ENV, "SLURM_ARRAY_TASK_ID")

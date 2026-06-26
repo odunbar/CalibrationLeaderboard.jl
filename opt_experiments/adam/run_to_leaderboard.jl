@@ -18,27 +18,27 @@ function main()
     tasks      = flat_tasks(cfg)
     output_dir = joinpath(@__DIR__, "output")
 
-    conv_scores = fill(NaN, length(cfg.N_ens_sizes), cfg.n_repeats)
+    conv_scores = fill(NaN, cfg.n_repeats, length(cfg.rmse_targets))
 
-    for (N_ens, rng_idx) in tasks
-        fn = joinpath(output_dir, result_filename(cfg, N_ens, rng_idx))
+    for (rmse_target, rng_idx) in tasks
+        fn = joinpath(output_dir, result_filename(cfg, rmse_target, rng_idx))
         if !isfile(fn)
             @warn "Missing: $fn"
             continue
         end
         d  = JLD2.load(fn)
-        ee = findfirst(==(N_ens), cfg.N_ens_sizes)
-        conv_scores[ee, rng_idx] = d["conv_score"]
+        rr = findfirst(==(rmse_target), cfg.rmse_targets)
+        conv_scores[rng_idx, rr] = d["conv_score"]
     end
 
     nc_path = joinpath(output_dir, nc_filename(cfg))
     write_results_nc(
         nc_path;
         random_seed    = collect(1:cfg.n_repeats),
-        ensemble_size  = Float64.(cfg.N_ens_sizes),
-        rmse_target    = [cfg.target_rmse],
+        ensemble_size  = [1.0],
+        rmse_target    = Float64.(cfg.rmse_targets),
         algorithm_type = ["adam"],
-        metric         = reshape(conv_scores, length(cfg.N_ens_sizes), cfg.n_repeats, 1, 1),
+        metric         = reshape(conv_scores, cfg.n_repeats, 1, length(cfg.rmse_targets), 1),
     )
     @info "Leaderboard written: $nc_path"
 end
