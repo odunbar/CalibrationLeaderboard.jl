@@ -14,7 +14,7 @@ run_date = today()
 ###############  PER-CASE CONFIG  #####################################
 ########################################################################
 function experiment_config(case::Symbol)
-    n_repeats   = 20
+    n_repeats   = 100
     rmse_targets = [1.0, 1.1, 1.2]
     N_iter      = 10000   # Adam needs more iterations than LM
 

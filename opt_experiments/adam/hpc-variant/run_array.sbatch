@@ -2,8 +2,8 @@
 # SLURM array job for Adam runs (L63 or L96).
 # One task per (N_ens, rng_idx) cell.
 #
-# N_TASKS = length(N_ens_sizes) * n_repeats = 1 * 20 = 20
-# If N_ens_sizes or n_repeats change in experiment_config.jl, update --array upper bound.
+# N_TASKS = length(rmse_targets) * n_repeats = 3 * 100 = 300
+# If rmse_targets or n_repeats change in experiment_config.jl, update --array upper bound.
 #
 # L63:
 #   sbatch --export=ALL,SCRIPT=run_l63_adam.jl,EXPERIMENT=l63 run_array.sbatch
@@ -18,7 +18,7 @@
 #SBATCH --job-name=run_adam
 #SBATCH --output=../output/slurm/run_%A_%a.out
 #SBATCH --error=../output/slurm/run_%A_%a.err
-#SBATCH --array=1-20%100
+#SBATCH --array=1-300%100
 #SBATCH --time=04:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
