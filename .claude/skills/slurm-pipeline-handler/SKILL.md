@@ -29,53 +29,52 @@ Read `references/pipeline-opt.md` for the OPT pipeline spec (to be built).
 ## Core design principle: one set of .jl scripts, two run modes
 
 Local and HPC use the **same Julia scripts**. The dispatch mechanism lives in
-`experiment_config.jl` (or equivalent) and must be present in every
-array-capable entry point:
+`experiment_config.jl` and must be present in every array-capable entry point:
 
 ```julia
-# In every array-capable entry-point script, before main():
-include("experiment_config.jl")   # or the @__DIR__-relative path to common/config/
-
 function main()
-    tidx = task_index_from_args()     # SLURM_ARRAY_TASK_ID > ARGS[1] > nothing (run all)
-    experiment = l96_experiment()     # EXPERIMENT env var > ARGS[2] > toggle in config
-    tasks = flat_tasks(experiment_config(experiment))
+    tidx       = task_index_from_args()   # SLURM_ARRAY_TASK_ID > ARGS[1] > nothing
+    experiment = l96_experiment()         # EXPERIMENT env var > ARGS[2] > config toggle
+    tasks      = flat_tasks(experiment_config(experiment))
 
     if tidx === nothing
-        for (N_ens, rng_idx) in tasks
-            run_one(N_ens, rng_idx)
-        end
+        for (N_ens, rng_idx) in tasks; run_one(N_ens, rng_idx); end
     else
-        (N_ens, rng_idx) = tasks[tidx]
-        run_one(N_ens, rng_idx)
+        (N_ens, rng_idx) = tasks[tidx]; run_one(N_ens, rng_idx)
     end
 end
-
 main()
 ```
 
-`task_index_from_args()` and `l96_experiment()` are defined in `experiment_config.jl`.
 **Never hard-code a case index** (`case = cases[2]`) — always use the env-var / ARGS path.
 
 ## The --array upper bound is a footgun
 
-Every `--array=1-N` in every sbatch file must equal `length(flat_tasks(cfg))`
-from `experiment_config.jl`. When these get out of sync, tasks either don't run
-or index out of bounds. Always check and document this:
+Every `--array=1-N` must equal `length(flat_tasks(cfg))` from `experiment_config.jl`.
+When these get out of sync, tasks either don't run or index out of bounds.
+Document the formula in every sbatch header:
 
 ```bash
-# In the sbatch comment header:
 # N_TASKS = length(rmse_targets) * n_repeats = 3 * 100 = 300  (OPT)
 # N_TASKS = length(N_ens_sizes) * n_repeats  = 9 * 20  = 180  (UQ)
 # If either value changes in experiment_config.jl, update --array upper bound.
 ```
 
-The UQ example uses 180 = 9 N_ens_sizes × 20 repeats. OPT adam uses 300 = 3 rmse_targets × 100 repeats.
-Different methods will have different values — compute `length(flat_tasks(cfg))` explicitly.
+### When array size varies by case
+
+If different cases produce different task counts (e.g. L63 uses 4 `N_ens_sizes` while
+L96 uses 3), don't rely on a single `#SBATCH --array=1-N` in `run_array.sbatch`.
+Instead, pass `--array=1-N` in each `submit_l*.sh` — command-line args override
+`#SBATCH` directives:
+
+```bash
+sbatch --array=1-80 --export=ALL,SCRIPT=run_l63_<method>.jl ... run_array.sbatch
+sbatch --array=1-60 --export=ALL,SCRIPT=run_l96_<method>.jl ... run_array.sbatch
+```
+
+Document the per-case formula in the submit script comment so it stays in sync.
 
 ## Cluster-specific settings (Caltech Resnick / cascadelake)
-
-These are parameterized in every sbatch template:
 
 | Setting | Value | Where |
 |---|---|---|
@@ -85,52 +84,38 @@ These are parameterized in every sbatch template:
 | CPU target | `JULIA_CPU_TARGET="cascadelake"` | `precompile.sbatch` only |
 | Thread count | `${SLURM_CPUS_PER_TASK}` | `JULIA_NUM_THREADS` + `OPENBLAS_NUM_THREADS` |
 | No auto-precompile | `JULIA_PKG_PRECOMPILE_AUTO=0` | All non-precompile sbatch files |
-| Log dir | `output/slurm/` | All `--output` / `--error` |
-
-When adapting for a different cluster, only these settings change — the Julia
-script invocation and dependency chain stay the same.
+| Log dir | `../output/slurm/` | All `--output` / `--error` (OPT); `output/slurm/` (UQ) |
 
 ## Pin the run date before submitting
 
-In the single `experiment_config.jl` (lives in the experiment directory, e.g. `adam/`),
-comment out the `today()` line and pin the date before submitting any array job:
+In `experiment_config.jl`, comment out `today()` and pin the date before submitting:
 ```julia
-# UQ experiments use calibrate_date:
-calibrate_date = Date("2026-06-04", "yyyy-mm-dd")
-
-# OPT experiments use run_date:
-run_date = Date("2026-06-25", "yyyy-mm-dd")
+run_date = Date("2026-06-25", "yyyy-mm-dd")   # OPT
+# calibrate_date = Date("2026-06-04", "yyyy-mm-dd")  # UQ
 ```
-This ensures all array tasks write into the same output directory even when
-jobs run past midnight or across days. The submit scripts should remind users:
+This ensures all array tasks write to the same output directory. Unpin after the run.
+The submit scripts should echo a reminder to do this.
 
-```bash
-echo "NOTE: This script does not precompile. Run bash submit_precompile.sh first."
-echo "NOTE: Pin run_date in experiment_config.jl before submitting."
-```
-
-**One config only.** There is no separate `hpc-variant/experiment_config.jl`. Local and HPC
-runs share the same file. Unpin (restore `today()`) after the run completes.
+**One config only.** No separate `hpc-variant/experiment_config.jl`. Local and HPC share.
 
 ## Precompile job — always separate
 
 `precompile.sbatch` + `submit_precompile.sh` must exist as standalone files.
-The `submit_l*.sh` scripts **never** submit a precompile — they only remind the
-user to run it first. This avoids dozens of array tasks racing to precompile.
+The `submit_l*.sh` scripts never submit a precompile — they only remind the user.
+This avoids dozens of array tasks racing to precompile.
 
 ## Serial pre-stage job (preliminaries pattern)
 
-When run scripts share expensive setup that all array tasks need — computing truth data,
-obs covariances, initial conditions — that setup creates a race condition if left inside
-the run script with a "compute-if-missing" guard: multiple array tasks may start
-simultaneously and all try to write the same file.
+When run scripts share expensive setup (truth data, obs covariances, ICs), a
+`"compute-if-missing"` guard inside the run script becomes a race condition on HPC:
+multiple array tasks start simultaneously and all try to write the same file.
 
-The fix: extract the setup into a dedicated `l*_preliminaries.jl` script and run it
-as a single serial SLURM job before the array starts.
+**The fix:** extract the setup into `l*_preliminaries.jl` and run it as a single
+serial SLURM job before the array starts.
 
 ### When to apply
 
-Look for a `build_*_problem()` function (or equivalent) that contains:
+Look for a `build_*_problem()` function containing:
 ```julia
 if isfile(prelim_file)
     ld = load_preliminaries(prelim_file)
@@ -139,19 +124,17 @@ else
     save_preliminaries(pdc, prelim_file)
 end
 ```
-That guard is a local-run convenience that becomes a race condition on HPC.
-Extract the `else` branch into its own script.
+That guard is a local-run convenience. Extract the `else` branch into its own script.
 
 ### The three-part change
 
 **1. Create `l63_preliminaries.jl` / `l96_preliminaries.jl` (in `<method>/`)**
 
-The script computes and saves unconditionally — no existence check:
+Computes and saves unconditionally — no existence check:
 
 ```julia
 function main()
     rng_i = MersenneTwister(11)    # fixed seed for reproducibility
-    # ... same setup as the old else-branch in build_*_problem ...
     pdc = compute_perfect_data(...)
     save_preliminaries(pdc, prelim_file)
     @info "Saved preliminaries to $prelim_file"
@@ -159,8 +142,7 @@ end
 main()
 ```
 
-For L96, use `l96_experiment()` and `experiment_config(experiment).force_case` to
-select the case — the same env-var dispatch as the run scripts, so
+For L96, use `l96_experiment()` / `experiment_config(experiment).force_case` so
 `EXPERIMENT=l96_const julia --project=. l96_preliminaries.jl` works locally too.
 
 **2. Simplify `build_*_problem()` in the run scripts to load-or-error**
@@ -178,69 +160,55 @@ function build_l63_problem(output_dir)
 end
 ```
 
-Any per-task setup (prior distributions, forcing parameters, NN structure) stays in
+Per-task setup (prior distributions, forcing parameters, NN structure) stays in
 `build_*_problem()` — only the shared expensive computation moves to the prelim script.
 
 **3. Create `hpc-variant/preliminaries.sbatch`**
 
-Mirror `leaderboard.sbatch` — single job, no array, same `cd ${SLURM_SUBMIT_DIR}` path trick:
+Mirror `leaderboard.sbatch`: single job, no `--array`, same `cd ${SLURM_SUBMIT_DIR}`
+path trick. No `${SLURM_ARRAY_TASK_ID}` argument — the prelim script runs once, not
+once per cell. Use `SCRIPT=${SCRIPT:-l63_preliminaries.jl}` for the env-var dispatch.
+
+### Submit chain with preliminaries
+
+```
+preliminaries  →(afterok)→  run_array  →(afterany)→  leaderboard
+```
+
+Use `afterany` (not `afterok`) for the leaderboard: `run_to_leaderboard` reads whatever
+JLD2 files exist and warns on missing ones, so it should fire even if some array tasks failed.
 
 ```bash
-#SBATCH --job-name=prelim_<method>
-#SBATCH --output=../output/slurm/prelim_%j.out
-#SBATCH --error=../output/slurm/prelim_%j.err
-#SBATCH --time=00:30:00
-#SBATCH --mem=8G
-#SBATCH --cpus-per-task=1
-#SBATCH --ntasks=1
-#SBATCH --constraint=cascadelake
-
-SCRIPT=${SCRIPT:-l63_preliminaries.jl}
-cd "${SLURM_SUBMIT_DIR}"
-export JULIA_PKG_PRECOMPILE_AUTO=0
-julia --project=.. "../${SCRIPT}"
-```
-
-Unlike `run_array.sbatch`, there is **no** `"${SLURM_ARRAY_TASK_ID}"` argument —
-the prelim script runs once over the whole problem, not once per cell.
-
-### Updated submit chain with preliminaries
-
-```
-preliminaries  →(afterok)→  run_array  →(afterok)→  leaderboard
-```
-
-In each `submit_l*.sh`, submit `preliminaries.sbatch` first and chain `run_array` off it:
-
-```bash
-PRELIM_JID=$(sbatch --parsable \
-                    -A esm \
+PRELIM_JID=$(sbatch --parsable -A esm \
                     --job-name="prelim_${LABEL}" \
                     --export=ALL,SCRIPT=l63_preliminaries.jl,EXPERIMENT=l63 \
                     preliminaries.sbatch)
-echo "  preliminaries job ID: ${PRELIM_JID}"
 
-RUN_JID=$(sbatch --parsable \
-                 -A esm \
+RUN_JID=$(sbatch --parsable -A esm \
                  --job-name="run_${LABEL}" \
-                 --dependency=afterok:${PRELIM_JID} \
-                 --kill-on-invalid-dep=yes \
+                 --dependency=afterok:${PRELIM_JID} --kill-on-invalid-dep=yes \
                  --export=ALL,SCRIPT=run_l63_<method>.jl,EXPERIMENT=l63 \
                  run_array.sbatch)
+
+LB_JID=$(sbatch --parsable -A esm \
+                --job-name="leaderboard_${LABEL}" \
+                --dependency=afterany:${RUN_JID} --kill-on-invalid-dep=yes \
+                --export=ALL,EXPERIMENT=l63 \
+                leaderboard.sbatch)
 ```
 
-### Updated hpc-variant layout (when preliminaries are present)
+### hpc-variant layout (with preliminaries)
 
 ```
 <method>/
-├── experiment_config.jl         ← single config (pin run_date here before submitting)
-├── l63_preliminaries.jl         ← runs once before l63 array
-├── l96_preliminaries.jl         ← case selected via EXPERIMENT env var
+├── experiment_config.jl         ← single config (pin run_date before submitting)
+├── l63_preliminaries.jl
+├── l96_preliminaries.jl
 ├── run_l63_<method>.jl
 ├── run_l96_<method>.jl
 ├── run_to_leaderboard.jl
 └── hpc-variant/
-    ├── preliminaries.sbatch     ← single serial pre-stage job
+    ├── preliminaries.sbatch
     ├── run_array.sbatch
     ├── leaderboard.sbatch
     ├── precompile.sbatch
@@ -255,47 +223,41 @@ RUN_JID=$(sbatch --parsable \
 
 1. Identify the stages: `calibrate`, `emulate_sample`, `pushforward_from_posterior`,
    `diagnostic_plots`, `exp_to_leaderboard`.
-2. For each stage that runs per `(N_ens, rng_idx)` cell: use `array.sbatch` template.
-3. For stages that run once over all cells serially: use `single_job.sbatch` template.
-4. Create `submit_l63.sh`, `submit_l96_const.sh`, `submit_l96_vec.sh`, `submit_l96_flux.sh`
-   from the `submit.sh` template — each chains the stages with `--dependency=afterok/afterany`.
-5. Create `precompile.sbatch` + `submit_precompile.sh` from templates.
-6. Write or update `README.md` using `assets/README-skeleton.md`.
+2. Per-cell stages: use `array.sbatch` template. Serial stages: use `single_job.sbatch`.
+3. Create `submit_l63.sh`, `submit_l96_const.sh`, `submit_l96_vec.sh`, `submit_l96_flux.sh`
+   — each chains stages with `afterok` between array jobs and `afterany` before the leaderboard.
+4. Create `precompile.sbatch` + `submit_precompile.sh` from templates.
+5. Write or update `README.md` using `assets/README-skeleton.md`.
 
 See `references/pipeline-uq.md` for the full dependency graph and sbatch table.
 
 ### OPT pipeline
 
-`opt_experiments/adam/hpc-variant/` is the canonical reference for OPT pipelines —
-it was built first and follows the patterns below. When adding SLURM to a new OPT method:
+`opt_experiments/adam/hpc-variant/` is the canonical reference. When adding SLURM to a new OPT method:
 
 1. Check whether the run scripts already have `task_index_from_args()`, `l96_experiment()`,
-   and `flat_tasks()` in their `main()`. If not, add them (see the core design principle
-   above). Adam already has these; older methods (EKP, CBO) may not.
+   and `flat_tasks()` in their `main()`. If not, add them. Adam already has these; older
+   methods (EKP, CBO) may not.
 2. Create `experiment_config.jl` in the method directory with `run_date = today()`.
-3. Create `hpc-variant/` — put only sbatch + submit files there, no `experiment_config.jl`
-   (see "OPT hpc-variant layout" section below — do NOT copy the run scripts).
+3. Create `hpc-variant/` — put only sbatch + submit files there, no Julia scripts.
 4. Array sbatch = one task per `(N_ens, rng_idx)` cell.
-5. After the array completes, a single `leaderboard.sbatch` job runs
-   `run_to_leaderboard.jl` (saves netcdf via `write_results_nc`).
-6. If the run scripts share expensive setup (truth data, obs covariance, ICs), apply
-   the **serial pre-stage pattern**: create `l*_preliminaries.jl` scripts and
-   `preliminaries.sbatch`. See the "Serial pre-stage job" section above.
-7. `submit_l63.sh` (with prelims): `preliminaries` →(afterok)→ `run_array` →(afterok)→ `leaderboard`.
-   Without prelims: `run_array` →(afterok)→ `leaderboard`.
+5. After the array completes, a single `leaderboard.sbatch` runs `run_to_leaderboard.jl`.
+6. If run scripts share expensive setup, apply the **serial pre-stage pattern** above.
+7. Dependency chain: `preliminaries` →(afterok)→ `run_array` →(afterany)→ `leaderboard`.
+   Without prelims: `run_array` →(afterany)→ `leaderboard`.
 8. `submit_l96_<case>.sh`: same pattern with `EXPERIMENT=l96_const|l96_vec|l96_flux`.
 
 See `references/pipeline-opt.md` for the dependency graph and stage table.
 
 ## OPT hpc-variant layout: avoid copying scripts
 
-OPT run scripts stay in the method directory (`adam/`). `hpc-variant/` contains only
-sbatch and submit files — no `experiment_config.jl`, no Julia scripts:
+OPT run scripts stay in the method directory. `hpc-variant/` contains only sbatch and
+submit files — no `experiment_config.jl`, no Julia scripts:
 
 ```
 adam/
-├── experiment_config.jl      ← single config (pin run_date here before submitting)
-├── run_l63_adam.jl           ← NOT copied; stays here
+├── experiment_config.jl
+├── run_l63_adam.jl
 ├── run_l96_adam.jl
 ├── run_to_leaderboard.jl
 └── hpc-variant/
@@ -307,65 +269,41 @@ adam/
     └── submit_l96_*.sh
 ```
 
-**Submit from `hpc-variant/`, run scripts from `adam/`:**
-
 In every OPT sbatch file:
 ```bash
-cd "${SLURM_SUBMIT_DIR}"   # = hpc-variant/ (set by SLURM to submission directory)
+cd "${SLURM_SUBMIT_DIR}"   # = hpc-variant/
 julia --project=.. "../${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
 ```
 
-Why each part matters:
-- `--project=..` → uses `adam/Project.toml` (one level up) ✓
-- `"../${SCRIPT}"` → Julia sees the script at its real location (`adam/`), so `@__DIR__`
-  inside the script resolves to `adam/`, keeping `../../common` paths correct ✓
-- `include("experiment_config.jl")` inside the script resolves relative to the **script's
-  directory** (`adam/`), NOT the CWD — Julia's include is always file-relative, never
-  CWD-relative. So there is one config and it always comes from `adam/`. ✓
+- `--project=..` uses `adam/Project.toml`
+- `"../${SCRIPT}"` makes `@__DIR__` resolve to `adam/`, keeping `../../common` paths correct
+- `include("experiment_config.jl")` in the script resolves relative to the script's directory
+  (`adam/`), not the CWD — so there is always exactly one config
 
-**Log paths** for OPT sbatch files use `../output/slurm/` (not `output/slurm/`):
-```bash
-#SBATCH --output=../output/slurm/run_%A_%a.out
-```
-
-**Submit scripts** use `mkdir -p ../output/slurm` and `cd "$DIR"` where `$DIR` is
-the `hpc-variant/` directory:
-```bash
-DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$DIR"
-mkdir -p ../output/slurm
-```
-
-**For UQ experiments**, the same single-config principle applies. `hpc-variant/` contains
-only sbatch + submit files; any `experiment_config.jl` in `hpc-variant/` should be removed.
-When working on UQ, follow `calibrate_emulate_sample/hpc-variant/` as the structural template
-but apply the same single-config rule.
+Log paths use `../output/slurm/`; submit scripts use `mkdir -p ../output/slurm`.
 
 ## Adjusting array size
 
 When `rmse_targets`, `N_ens_sizes`, or `n_repeats` change in `experiment_config.jl`:
 - Recompute `length(flat_tasks(cfg))` = `length(rmse_targets) * n_repeats` (OPT)
   or `length(N_ens_sizes) * n_repeats` (UQ).
-- Update `--array=1-N` in **every** array sbatch file for that experiment.
-- Update the comment at the top of each sbatch file that documents the formula.
-- The `%100` concurrency cap can be raised or removed for faster turnaround;
-  keep it as a cluster-courtesy default.
+- Update `--array=1-N` in every array sbatch file and every submit script for that experiment.
+- Update the formula comment at the top of each sbatch file.
+- The `%100` concurrency cap can be raised or removed; keep it as a cluster-courtesy default.
 
 ## Smoke test before full submission
 
 Always offer a smoke test one-liner before suggesting a full array run:
 
 ```bash
-# UQ example — run only task 1 to verify file resolution and output writing:
-sbatch --array=1-1 --export=ALL,SCRIPT=calibrate_l63.jl calibrate_array.sbatch
+# OPT:
+sbatch --array=1-1 --export=ALL,SCRIPT=run_l63_<method>.jl,EXPERIMENT=l63 run_array.sbatch
 
-# OPT equivalent:
-sbatch --array=1-1 --export=ALL,SCRIPT=run_l63_<method>.jl run_array.sbatch
+# UQ:
+sbatch --array=1-1 --export=ALL,SCRIPT=calibrate_l63.jl calibrate_array.sbatch
 ```
 
 ## Template files (in assets/)
-
-Copy and fill in `<PLACEHOLDER>` values:
 
 | Template | Purpose |
 |---|---|
@@ -381,5 +319,5 @@ Copy and fill in `<PLACEHOLDER>` values:
 After finishing, offer to improve the **slurm-pipeline-handler** skill via
 skill-creator: "Would you like to improve the **slurm-pipeline-handler** skill
 using skill-creator? You can share suggestions, or I can analyse what came up
-this session — e.g. cluster settings that differed, a dependency pattern that
-was tricky, or steps that were unclear — to refine the skill for next time."
+this session — e.g. a dependency pattern that was tricky, or steps that were
+unclear — to refine the skill for next time."
