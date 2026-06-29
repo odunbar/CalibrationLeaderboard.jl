@@ -42,7 +42,7 @@ echo "=== Submitting leaderboard (L96 const-force, after ${RUN_JID}) ==="
 LB_JID=$(sbatch --parsable \
                 -A esm \
                 --job-name="leaderboard_${LABEL}" \
-                --dependency=afterok:${RUN_JID} \
+                --dependency=afterany:${RUN_JID} \
                 --kill-on-invalid-dep=yes \
                 --export=ALL,EXPERIMENT=l96_const \
                 leaderboard.sbatch)

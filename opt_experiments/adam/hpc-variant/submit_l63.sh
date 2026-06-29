@@ -43,7 +43,7 @@ echo "=== Submitting leaderboard (L63, after ${RUN_JID}) ==="
 LB_JID=$(sbatch --parsable \
                 -A esm \
                 --job-name="leaderboard_${LABEL}" \
-                --dependency=afterok:${RUN_JID} \
+                --dependency=afterany:${RUN_JID} \
                 --kill-on-invalid-dep=yes \
                 --export=ALL,EXPERIMENT=l63 \
                 leaderboard.sbatch)
