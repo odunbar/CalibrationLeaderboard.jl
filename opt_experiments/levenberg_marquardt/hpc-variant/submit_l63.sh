@@ -2,8 +2,8 @@
 # Submit the Levenberg-Marquardt L63 pipeline.
 # Dependency chain: preliminaries →(afterok)→ run_array →(afterok)→ leaderboard
 #
-# N_TASKS = length(N_ens_sizes) * n_repeats = 1 * 20 = 20
-# If N_ens_sizes or n_repeats change in experiment_config.jl, update --array below.
+# N_TASKS = length(rmse_targets) * n_repeats = 3 * 100 = 300
+# If rmse_targets or n_repeats change in experiment_config.jl, update --array below.
 #
 # Usage: bash submit_l63.sh [EXP_ID]
 #   EXP_ID (optional): label appended to SLURM job names so the queue stays
@@ -36,7 +36,7 @@ echo "=== Submitting run_array (L63, gradient_descent, after ${PRELIM_JID}) ==="
 RUN_JID=$(sbatch --parsable \
                  -A esm \
                  --job-name="run_${LABEL}" \
-                 --array=1-20 \
+                 --array=1-300 \
                  --dependency=afterok:${PRELIM_JID} \
                  --kill-on-invalid-dep=yes \
                  --export=ALL,SCRIPT=run_l63_gradient_descent.jl,EXPERIMENT=l63 \

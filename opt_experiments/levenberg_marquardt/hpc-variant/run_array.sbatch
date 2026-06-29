@@ -2,16 +2,16 @@
 # SLURM array job for Levenberg-Marquardt (gradient_descent) runs (L63 or L96).
 # One task per (N_ens, rng_idx) cell.
 #
-# N_TASKS (all cases):   length(N_ens_sizes) * n_repeats = 1 * 20 = 20
-# If N_ens_sizes or n_repeats change in experiment_config.jl, update --array
+# N_TASKS (all cases):   length(rmse_targets) * n_repeats = 3 * 100 = 300
+# If rmse_targets or n_repeats change in experiment_config.jl, update --array
 # in the submit scripts (which override this default with --array=1-N).
 #
 # L63:
-#   sbatch --array=1-20 --export=ALL,SCRIPT=run_l63_gradient_descent.jl,EXPERIMENT=l63 run_array.sbatch
+#   sbatch --array=1-300 --export=ALL,SCRIPT=run_l63_gradient_descent.jl,EXPERIMENT=l63 run_array.sbatch
 # L96:
-#   sbatch --array=1-20 --export=ALL,SCRIPT=run_l96_gradient_descent.jl,EXPERIMENT=l96_const run_array.sbatch
-#   sbatch --array=1-20 --export=ALL,SCRIPT=run_l96_gradient_descent.jl,EXPERIMENT=l96_vec   run_array.sbatch
-#   sbatch --array=1-20 --export=ALL,SCRIPT=run_l96_gradient_descent.jl,EXPERIMENT=l96_flux  run_array.sbatch
+#   sbatch --array=1-300 --export=ALL,SCRIPT=run_l96_gradient_descent.jl,EXPERIMENT=l96_const run_array.sbatch
+#   sbatch --array=1-300 --export=ALL,SCRIPT=run_l96_gradient_descent.jl,EXPERIMENT=l96_vec   run_array.sbatch
+#   sbatch --array=1-300 --export=ALL,SCRIPT=run_l96_gradient_descent.jl,EXPERIMENT=l96_flux  run_array.sbatch
 #
 # Smoke test (verify paths and output writing before full run):
 #   sbatch --array=1-1 --export=ALL,SCRIPT=run_l63_gradient_descent.jl,EXPERIMENT=l63 run_array.sbatch
@@ -19,7 +19,7 @@
 #SBATCH --job-name=run_lm
 #SBATCH --output=../output/slurm/run_%A_%a.out
 #SBATCH --error=../output/slurm/run_%A_%a.err
-#SBATCH --array=1-20
+#SBATCH --array=1-300
 #SBATCH --time=04:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4

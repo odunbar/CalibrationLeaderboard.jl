@@ -43,7 +43,8 @@ end
 # Single LM trajectory; N_ens controls how many IC perturbations are averaged
 # each step to reduce gradient noise.  N_ens=1 is pure LM with a single IC sample.
 # Cost: outer_iter × N_ens × (nu + 1) forward-model evaluations.
-function run_one(cfg, N_ens, rng_idx, problem)
+function run_one(cfg, rmse_target, rng_idx, problem)
+    N_ens = 1
     (; x0, y, R, R_inv_var, ic_cov_sqrt, lorenz_cfg, obs_cfg, nx) = problem
     rng = MersenneTwister(rng_idx)
 
@@ -80,7 +81,7 @@ function run_one(cfg, N_ens, rng_idx, problem)
         r̃ = R_inv_var * (r_sum / N_ens)   # whitened residual (ny)
         RMSE = norm(r̃) / sqrt(ny)
 
-        if RMSE < cfg.target_rmse
+        if RMSE < rmse_target
             conv_score   = outer_iter * N_ens * (nu + 1)
             final_params = θ
             final_output = y - (r_sum / N_ens)
@@ -125,7 +126,7 @@ function run_one(cfg, N_ens, rng_idx, problem)
         end
     end
 
-    @info "N_ens=$(N_ens)  rng_idx=$(rng_idx)  conv=$(conv_score)  ‖Δθ‖/‖θ₀‖=$(round(norm(θ - θ_init) / norm(θ_init); sigdigits=4))"
+    @info "rmse_target=$(rmse_target)  rng_idx=$(rng_idx)  conv=$(conv_score)  ‖Δθ‖/‖θ₀‖=$(round(norm(θ - θ_init) / norm(θ_init); sigdigits=4))"
     return (; conv_score, final_params, final_output)
 end
 
@@ -146,17 +147,16 @@ function main()
     run_cells = tidx === nothing ? eachindex(tasks) : [tidx]
 
     for t in run_cells
-        N_ens, rng_idx = tasks[t]
-        @info "Task $t: N_ens=$N_ens, rng_idx=$rng_idx"
-        result = run_one(cfg, N_ens, rng_idx, problem)
-        fn = joinpath(output_dir, result_filename(cfg, N_ens, rng_idx))
+        rmse_target, rng_idx = tasks[t]
+        @info "Task $t: rmse_target=$rmse_target, rng_idx=$rng_idx"
+        result = run_one(cfg, rmse_target, rng_idx, problem)
+        fn = joinpath(output_dir, result_filename(cfg, rmse_target, rng_idx))
         JLD2.save(fn,
             "conv_score",   result.conv_score,
             "final_params", result.final_params,
             "final_output", result.final_output,
-            "N_ens",        N_ens,
             "rng_idx",      rng_idx,
-            "target_rmse",  cfg.target_rmse,
+            "rmse_target",  rmse_target,
         )
         @info "Saved: $fn"
     end
