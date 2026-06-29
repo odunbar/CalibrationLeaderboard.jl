@@ -22,7 +22,7 @@ function experiment_config(case::Symbol)
         return (
             model       = "l63",
             force_case  = nothing,
-            N_ens_sizes = [1, 10, 100, 1000],   # IC-averaging samples; 1 = pure LM, larger = less noisy Jacobian
+            N_ens_sizes = [1],
             n_repeats   = n_repeats,
             N_iter      = N_iter,
             target_rmse = target_rmse,
@@ -32,7 +32,7 @@ function experiment_config(case::Symbol)
         return (
             model       = "l96",
             force_case  = "const-force",
-            N_ens_sizes = [1, 5, 10],
+            N_ens_sizes = [1],
             n_repeats   = n_repeats,
             N_iter      = N_iter,
             target_rmse = target_rmse,
@@ -42,7 +42,7 @@ function experiment_config(case::Symbol)
         return (
             model       = "l96",
             force_case  = "vec-force",
-            N_ens_sizes = [1, 5, 10],
+            N_ens_sizes = [1],
             n_repeats   = n_repeats,
             N_iter      = N_iter,
             target_rmse = target_rmse,
@@ -52,7 +52,7 @@ function experiment_config(case::Symbol)
         return (
             model       = "l96",
             force_case  = "flux-force",
-            N_ens_sizes = [1, 5, 10],
+            N_ens_sizes = [1],
             n_repeats   = n_repeats,
             N_iter      = N_iter,
             target_rmse = target_rmse,

@@ -25,42 +25,15 @@ include("experiment_config.jl")
 ###############  Problem setup  #######################################
 ########################################################################
 
-function build_l63_problem(output_dir; rng_seed_init = 11)
-    rng_i = MersenneTwister(rng_seed_init)
-    t = 0.01; T = 40.0; nx = 3; ny = 9
-    u_truth   = EnsembleMemberConfig([28.0, 8.0 / 3.0])
-    x_initial = rand(rng_i, Normal(0.0, 1.0), nx)
-
+function build_l63_problem(output_dir)
     prelim_file = joinpath(output_dir, "l63_computed_preliminaries.jld2")
-    if isfile(prelim_file)
-        ld          = load_preliminaries(prelim_file)
-        x0          = ld.x0
-        y           = ld.y
-        R           = ld.R
-        R_inv_var   = ld.R_inv_var
-        ic_cov_sqrt = ld.ic_cov_sqrt
-        lorenz_cfg  = ld.lorenz_config_settings
-        obs_cfg     = ld.observation_config
-        @info "Loaded precomputed preliminaries from $prelim_file"
-    else
-        pdc = compute_perfect_data(
-            u_truth, nx, ny,
-            LorenzConfig(t, 1000.0), x_initial,
-            LorenzConfig(t, T), ObservationConfig(30.0, T);
-            R_n_samples = 36,
-        )
-        x0          = pdc.x0
-        y           = pdc.y
-        R           = pdc.R
-        R_inv_var   = pdc.R_inv_var
-        ic_cov_sqrt = pdc.ic_cov_sqrt
-        lorenz_cfg  = pdc.lorenz_config_settings
-        obs_cfg     = pdc.observation_config
-        save_preliminaries(pdc, prelim_file)
-        @info "Saved computed quantities to $prelim_file"
-    end
-
-    return (; x0, y, R, R_inv_var, ic_cov_sqrt, lorenz_cfg, obs_cfg, nx)
+    isfile(prelim_file) || error("Prelim file not found: $prelim_file\nRun l63_preliminaries.jl first.")
+    ld = load_preliminaries(prelim_file)
+    @info "Loaded L63 preliminaries from $prelim_file"
+    return (; x0 = ld.x0, y = ld.y, R = ld.R, R_inv_var = ld.R_inv_var,
+              ic_cov_sqrt = ld.ic_cov_sqrt,
+              lorenz_cfg  = ld.lorenz_config_settings,
+              obs_cfg     = ld.observation_config, nx = 3)
 end
 
 ########################################################################
