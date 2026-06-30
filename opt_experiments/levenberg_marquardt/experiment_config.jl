@@ -68,14 +68,14 @@ function case_suffix(cfg, rmse_target, rng_idx)
 end
 
 function result_filename(cfg, rmse_target, rng_idx)
-    "$(cfg.model)_gradient_descent_result_$(case_suffix(cfg, rmse_target, rng_idx))_$(cfg.run_date).jld2"
+    "$(cfg.model)_lm_result_$(case_suffix(cfg, rmse_target, rng_idx))_$(cfg.run_date).jld2"
 end
 
 function nc_filename(cfg)
     if cfg.force_case === nothing
-        return "leaderboard_gradient_descent_$(cfg.model)_$(cfg.run_date).nc"
+        return "leaderboard_lm_$(cfg.model)_$(cfg.run_date).nc"
     else
-        return "leaderboard_gradient_descent_$(cfg.model)_$(cfg.force_case)_$(cfg.run_date).nc"
+        return "leaderboard_lm_$(cfg.model)_$(cfg.force_case)_$(cfg.run_date).nc"
     end
 end
 

@@ -1,14 +1,14 @@
-# gradient_descent — L96 opt experiment
+# lm — L96 opt experiment
 # Levenberg-Marquardt on (y - G(θ))' R⁻¹ (y - G(θ)) with ForwardDiff.jl Jacobians.
 #
 # Supports three forcing cases: const-force (nu=1), vec-force (nu=40), flux-force (nu=61).
 # N_ens independent restarts; each outer iteration all restarts take one LM step.
 # Cost: outer_iter × N_ens × (nu + 1) forward-model evaluations.
 #
-# Local: EXPERIMENT=l96_const julia --project=. run_l96_gradient_descent.jl
-#        EXPERIMENT=l96_vec   julia --project=. run_l96_gradient_descent.jl
-#        EXPERIMENT=l96_flux  julia --project=. run_l96_gradient_descent.jl
-# One cell: EXPERIMENT=l96_const julia --project=. run_l96_gradient_descent.jl <task_idx>
+# Local: EXPERIMENT=l96_const julia --project=. run_l96_lm.jl
+#        EXPERIMENT=l96_vec   julia --project=. run_l96_lm.jl
+#        EXPERIMENT=l96_flux  julia --project=. run_l96_lm.jl
+# One cell: EXPERIMENT=l96_const julia --project=. run_l96_lm.jl <task_idx>
 
 using BSON
 using Distributions

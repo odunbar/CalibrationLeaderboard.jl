@@ -1,4 +1,4 @@
-# gradient_descent — L63 preliminaries
+# lm — L63 preliminaries
 # Computes and saves the shared L63 problem quantities (truth trajectory, obs
 # covariance, IC spread) that all array tasks read.  Run this once before
 # submitting the run_array job.

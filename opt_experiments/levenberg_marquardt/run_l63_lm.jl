@@ -1,4 +1,4 @@
-# gradient_descent — L63 opt experiment
+# lm — L63 opt experiment
 # Levenberg-Marquardt on the quadratic likelihood (y - G(θ))' R⁻¹ (y - G(θ)).
 # Jacobians computed via ForwardDiff.jl (forward-mode AD through the Lorenz ODE).
 #
@@ -6,8 +6,8 @@
 # Cost metric: outer_iter × N_ens × (nu + 1) forward-model evaluations,
 #   where nu = number of parameters and +1 is the residual evaluation.
 #
-# Local (all cells):  julia --project=. run_l63_gradient_descent.jl
-# Local (one cell):   julia --project=. run_l63_gradient_descent.jl <task_index>
+# Local (all cells):  julia --project=. run_l63_lm.jl
+# Local (one cell):   julia --project=. run_l63_lm.jl <task_index>
 
 using Distributions
 using ForwardDiff

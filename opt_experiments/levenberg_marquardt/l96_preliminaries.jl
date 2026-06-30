@@ -1,4 +1,4 @@
-# gradient_descent — L96 preliminaries
+# lm — L96 preliminaries
 # Computes and saves the shared L96 problem quantities (truth trajectory, obs
 # covariance, IC spread) for one forcing case.  Run once per case before
 # submitting the corresponding run_array job.

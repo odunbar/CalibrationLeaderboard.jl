@@ -1,4 +1,4 @@
-# gradient_descent — leaderboard netcdf writer
+# lm — leaderboard netcdf writer
 # Reads per-cell JLD2 result files and writes one leaderboard netcdf.
 # Run after all run_l63 / run_l96 cells have completed.
 #
@@ -37,7 +37,7 @@ function main()
         random_seed    = collect(1:cfg.n_repeats),
         ensemble_size  = [1.0],
         rmse_target    = Float64.(cfg.rmse_targets),
-        algorithm_type = ["gradient_descent"],
+        algorithm_type = ["Levenberg-Marquardt"],
         metric         = reshape(conv_scores, cfg.n_repeats, 1, length(cfg.rmse_targets), 1),
     )
     @info "Leaderboard written: $nc_path"

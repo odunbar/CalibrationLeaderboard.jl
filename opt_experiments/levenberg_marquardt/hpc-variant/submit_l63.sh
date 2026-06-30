@@ -32,14 +32,14 @@ PRELIM_JID=$(sbatch --parsable \
                     preliminaries.sbatch)
 echo "  preliminaries job ID: ${PRELIM_JID}"
 
-echo "=== Submitting run_array (L63, gradient_descent, after ${PRELIM_JID}) ==="
+echo "=== Submitting run_array (L63, lm, after ${PRELIM_JID}) ==="
 RUN_JID=$(sbatch --parsable \
                  -A esm \
                  --job-name="run_${LABEL}" \
                  --array=1-300 \
                  --dependency=afterok:${PRELIM_JID} \
                  --kill-on-invalid-dep=yes \
-                 --export=ALL,SCRIPT=run_l63_gradient_descent.jl,EXPERIMENT=l63 \
+                 --export=ALL,SCRIPT=run_l63_lm.jl,EXPERIMENT=l63 \
                  run_array.sbatch)
 echo "  run_array job ID: ${RUN_JID}"
 
