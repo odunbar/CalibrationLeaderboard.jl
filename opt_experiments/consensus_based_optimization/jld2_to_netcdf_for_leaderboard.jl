@@ -1,65 +1,50 @@
-using NCDatasets
+# CBO — leaderboard netcdf writer
+# Reads per-cell JLD2 result files and writes one leaderboard netcdf.
+# Run after all run_l63 / run_l96 cells have completed.
+#
+# Local: julia --project=. jld2_to_netcdf_for_leaderboard.jl
+#        EXPERIMENT=l96_const julia --project=. jld2_to_netcdf_for_leaderboard.jl
 
+using JLD2
 
+const _COMMON = joinpath(@__DIR__, "..", "..", "common")
+include(joinpath(_COMMON, "opt_metrics", "write_results_nc.jl"))
+include("experiment_config.jl")
 
-function write_results_nc(
-    filename;
-    random_seed,
-    ensemble_size,
-    rmse_target,
-    algorithm_type,
-    metric,
-)
+function main()
+    experiment = l96_experiment()
+    cfg        = experiment_config(experiment)
+    tasks      = flat_tasks(cfg)
+    output_dir = joinpath(@__DIR__, "output")
 
-    ds = Dataset(filename, "c")
+    n_rng  = cfg.n_repeats
+    n_ens  = length(cfg.N_ens_sizes)
+    n_rmse = length(cfg.rmse_targets)
 
-    
-    minimum_required_names = ["random_seed", "ensemble_size", "rmse_target", "algorithm_type"]
-    #
-    # Define dimensions from actual data
-    #
-    defDim(ds, "random_seed", length(random_seed))
-    defDim(ds, "ensemble_size", length(ensemble_size))
-    defDim(ds, "rmse_target", length(rmse_target))
-    defDim(ds, "algorithm_type", length(algorithm_type))
+    conv_scores = fill(NaN, n_rng, n_ens, n_rmse)
 
-    #
-    # Coordinate variables
-    #
-    v_seed = defVar(ds, "random_seed", Int64, ("random_seed",))
+    for (N_ens, rmse_target, rng_idx) in tasks
+        fn = joinpath(output_dir, result_filename(cfg, N_ens, rmse_target, rng_idx))
+        if !isfile(fn)
+            @warn "Missing: $fn"
+            continue
+        end
+        d  = JLD2.load(fn)
+        ee = findfirst(==(N_ens), cfg.N_ens_sizes)
+        rr = findfirst(==(rmse_target), cfg.rmse_targets)
+        conv_scores[rng_idx, ee, rr] = d["conv_score"]
+    end
 
-    v_ens = defVar(ds, "ensemble_size", Float64, ("ensemble_size",))
-    v_ens.attrib["description"] = "Number of ensemble members"
-
-    v_rmse = defVar(ds, "rmse_target", Float64, ("rmse_target",))
-    v_rmse.attrib["description"] =
-        "Target accuracy level (root mean square error)"
-
-    v_alg = defVar(ds, "algorithm_type", String, ("algorithm_type",))
-
-    #
-    # Main variable
-    #
-    v_metric = defVar(
-        ds,
-        "metric",
-        Float64,
-        ("random_seed", "ensemble_size", "rmse_target", "algorithm_type"),
-        fillvalue = NaN,
+    nc_path = joinpath(output_dir, nc_filename(cfg))
+    write_results_nc(
+        nc_path;
+        random_seed    = collect(1:n_rng),
+        ensemble_size  = Float64.(cfg.N_ens_sizes),
+        rmse_target    = Float64.(cfg.rmse_targets),
+        algorithm_type = [method_tag(cfg.cbo_method)],
+        metric         = reshape(conv_scores, n_rng, n_ens, n_rmse, 1),
     )
-
-    v_metric.attrib["description"] =
-        "Number of forward model evaluations (i.e., algorithm cost)"
-
-    #
-    # Write data
-    #
-    v_seed[:] = random_seed
-    v_ens[:] = ensemble_size
-    v_rmse[:] = rmse_target
-    v_alg[:] = algorithm_type
-
-    v_metric[:] = metric
-
-    close(ds)
+    @info "Leaderboard written: $nc_path"
 end
+
+main()

@@ -1,2 +1,9 @@
-# call the following in `julia --project ]`
-dev ~/Dropbox/Caltech/Franca/Dohyeon/consensus-optimizer
+# ConsensusOptimization is a local package checked in at:
+#   opt_experiments/consensus_based_optimization/ConsensusOptimization.jl/
+#
+# To register it in this project's environment, run from this directory:
+#   julia --project=. -e 'using Pkg; Pkg.develop(path="ConsensusOptimization.jl")'
+#
+# Or interactively:
+#   julia --project=.
+#   ] dev ConsensusOptimization.jl

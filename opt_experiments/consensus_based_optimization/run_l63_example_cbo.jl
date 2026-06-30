@@ -1,253 +1,195 @@
-# Import modules
-using Distributions  # probability distributions and associated functions
+# CBO — L63 opt experiment
+# Consensus-based optimization on the L63 quadratic likelihood.
+# Toggle CBO_METHOD in experiment_config.jl to switch between CBO1 (first-order)
+# and CBO2 (second-order).  Cost metric: count × N_ens forward-model evaluations.
+#
+# Local (all cells):  julia --project=. run_l63_example_cbo.jl
+# Local (one cell):   julia --project=. run_l63_example_cbo.jl <task_index>
+
+using Dates
+using Distributions
+using EnsembleKalmanProcesses
+using EnsembleKalmanProcesses.ParameterDistributions
+using ConsensusOptimization
+using JLD2
 using LinearAlgebra
 using Random
-using JLD2
 using Statistics
-
-using ConsensusOptimization
-
-# CES
-
-using EnsembleKalmanProcesses
-using EnsembleKalmanProcesses.DataContainers
-using EnsembleKalmanProcesses.ParameterDistributions
-using EnsembleKalmanProcesses.Localizers
 
 const EKP = EnsembleKalmanProcesses
 
-include(joinpath(@__DIR__, "..", "..", "common", "forward_maps", "Lorenz63.jl")) # Contains Lorenz 63 source code
-
-verbose_flag = false
-########################################################################
-############### Choose problem type and structure ######################
-########################################################################
-
-N_ens_sizes = [20, 25, 30] # list of number of ensemble members (should be problem dependent)
-N_iter = 20 # maximum number of EKI iterations allowed
-target_rmse = 1.0 # target RMSE
-base_rng_seed = 235424
-base_rng = MersenneTwister(base_rng_seed)
-rng_seeds = randperm!(base_rng, collect(1:10000))[1:10] # list of random seeds
-@info "Running Lorenz 63 problem"
-@info "Maximum number of EKI iterations: $N_iter"
-@info "RMSE target: $target_rmse"
-configuration =
-    Dict("N_iter" => N_iter, "N_ens_sizes" => N_ens_sizes, "target_rmse" => target_rmse, "rng_seeds" => rng_seeds)
-
-nx = 3  # dimensions of parameter vector
-nu = 2
-u = EnsembleMemberConfig([28.0, 8.0 / 3.0])
-
-prior_mean = [3.3, 1.2]
-prior_cov = [
-    0.15^2 0
-    0 0.5^2
-]
-#Creating prior distribution
-distribution = Parameterized(MvNormal(prior_mean, prior_cov))
-constraint = repeat([no_constraint()], 2)
-name = "l63_prior"
-prior = ParameterDistribution(distribution, constraint, name)
-T = 40.0
-
-
+const _COMMON = joinpath(@__DIR__, "..", "..", "common")
+include(joinpath(_COMMON, "forward_maps", "Lorenz63.jl"))
+include(joinpath(_COMMON, "opt_metrics", "write_results_nc.jl"))
+include("experiment_config.jl")
 
 ########################################################################
-############################ Problem setup #############################
-########################################################################
-rng_seed_init = 11
-rng_i = MersenneTwister(rng_seed_init)
-
-output_dir = joinpath(@__DIR__, "output")
-if !isdir(output_dir)
-    mkdir(output_dir)
-end
-
-#Creating my sythetic data
-
-t = 0.01  #time step
-T_long = 1000.0  #total time 
-picking_initial_condition = LorenzConfig(t, T_long)
-x_initial = rand(rng_i, Normal(0.0, 1.0), nx) # initial condition for spinning up Lorenz system
-x_spun_up = lorenz_solve(u, x_initial, picking_initial_condition) # spinning up Lorenz system
-
-x0 = x_spun_up[:, end]  #last element of the run is the initial condition for creating the data
-
-ny = 9   #number of data points
-lorenz_config_settings = LorenzConfig(t, T)
-
-# construct how we compute Observations
-T_start = 30.0
-T_end = T
-observation_config = ObservationConfig(T_start, T_end)
-y = lorenz_forward(u, x0, lorenz_config_settings, observation_config) # synthetic data
-
-#Observation covariance R
-multiple = 36
-window = T_end - T_start
-T_R = multiple * window + T_start
-R_config = LorenzConfig(t, T_R)
-R_run = lorenz_solve(u, x_initial, R_config)
-R_sample_size = Int(ceil(multiple))
-R_samples = zeros(ny, R_sample_size)
-for ii in 1:R_sample_size
-    local_obs_config = ObservationConfig(T_start + (ii - 1) * window, T_start + ii * window)
-    R_samples[:, ii] = stats(R_run, R_config, local_obs_config)
-end
-R = cov(R_samples, dims = 2)
-R_sqrt = sqrt(R)
-R_inv_var = sqrt(inv(R))
-
-
-# Need a way to perturb the initial condition when doing the EKI updates
-# Solving for initial condition perturbation covariance
-covT = 2000.0  #time to simulate to calculate a covariance matrix of the system
-cov_solve = lorenz_solve(u, x0, LorenzConfig(t, covT))
-ic_cov = 0.1 * cov(cov_solve, dims = 2)
-ic_cov_sqrt = sqrt(ic_cov)
-
-########################################################################
-########################### Running EKI Race ###########################
+###############  CBO structs (problem + config)  ######################
 ########################################################################
 
-# Counters
-conv_alg_iters = fill(NaN, (length(N_ens_sizes), length(rng_seeds))) #count how many iterations it takes to converge (per algorithm, per rand seed, per ense size)
-final_parameters = fill(NaN, (length(N_ens_sizes), length(rng_seeds), nu))
-final_model_output = fill(NaN, (length(N_ens_sizes), length(rng_seeds), ny))
-
-method_names = [
-    ("Consensus-based (first-order)", "CBO1"),
-    ("Consensus-based (second-order)", "CBO2"),
-]
-
-
-struct Problem{FTOrVV <: Union{AbstractFloat,AbstractVector}, SS <: AbstractString}
+struct Problem{FTOrVV <: Union{AbstractFloat, AbstractVector}, SS <: AbstractString}
     cost::Function
     minimizer::FTOrVV
     name::SS
-end    
-
-function WeightedQuadratic(minimizer::VV, sqrt_inv_Γ::MM) where { VV <: AbstractVector , MM <: AbstractMatrix}
-    cost = x -> norm(sqrt_inv_Γ*(x .- minimizer))
-    
-    return Problem(cost, minimizer, "Quadratic-$(length(minimizer))D")
 end
 
-struct ConsensusBasedConfig{ PP <: Problem, OT <: ODEType, FT <: Real}
+function WeightedQuadratic(minimizer::VV, sqrt_inv_Γ::MM) where {VV <: AbstractVector, MM <: AbstractMatrix}
+    Problem(x -> norm(sqrt_inv_Γ * (x .- minimizer)), minimizer, "Quadratic-$(length(minimizer))D")
+end
+
+struct ConsensusBasedConfig{PP <: Problem, OT <: ODEType, FT <: Real}
     problem::PP
     model::OT
     weight_exponent::FT
     Δt::FT
 end
 
-problem = WeightedQuadratic(y, R_inv_var)
+########################################################################
+###############  Problem setup  #######################################
+########################################################################
 
-# CBO params
-sigma = 0.2
-lambda = 1.0
-inertia = 0.2
-sigma_cooling_flag = true
-models = [
-    Pair("first-order", FirstOrder(sigma, lambda, sigma_cooling_flag)),
-    Pair("second-order", SecondOrder(sigma, inertia, sigma_cooling_flag)), # doesn't work yet
-]
-model = models[1]
+function build_l63_problem(output_dir)
+    nx = 3; nu = 2; ny = 9; t = 0.01; T = 40.0
+    u_truth = EnsembleMemberConfig([28.0, 8.0 / 3.0])
 
-Δt = 0.3
-weight_exponent = 20.0
+    prior = ParameterDistribution(
+        Parameterized(MvNormal([3.3, 1.2], [0.15^2 0.0; 0.0 0.5^2])),
+        repeat([no_constraint()], nu),
+        "l63_prior",
+    )
 
-cbo_config = ConsensusBasedConfig(problem, model.second, weight_exponent, Δt)
+    prelim_file = joinpath(output_dir, "l63_computed_preliminaries.jld2")
+    if isfile(prelim_file)
+        ld = load_preliminaries(prelim_file)
+        @info "Loaded L63 preliminaries from $prelim_file"
+    else
+        rng_i     = MersenneTwister(11)
+        x_initial = rand(rng_i, Normal(0.0, 1.0), nx)
+        ld = compute_perfect_data(
+            u_truth, nx, ny,
+            LorenzConfig(t, 1000.0), x_initial,
+            LorenzConfig(t, T), ObservationConfig(30.0, T),
+        )
+        save_preliminaries(ld, prelim_file)
+        @info "Saved L63 preliminaries to $prelim_file"
+    end
 
-for (rr, rng_seed) in enumerate(rng_seeds)
-    @info "Random seed: $(rng_seed)"
-    rng = MersenneTwister(rng_seed)
+    return (; x0          = ld.x0,
+              y           = ld.y,
+              R           = ld.R,
+              R_inv_var   = ld.R_inv_var,
+              ic_cov_sqrt = ld.ic_cov_sqrt,
+              lorenz_cfg  = ld.lorenz_config_settings,
+              obs_cfg     = ld.observation_config,
+              nx, nu, ny, prior)
+end
 
-    for (ee, N_ens) in enumerate(N_ens_sizes)
-        # initial parameters: N_params x N_ens
-        initial_params = construct_initial_ensemble(rng, prior, N_ens)
+########################################################################
+###############  Run one (N_ens, rmse_target, rng_idx) cell  ##########
+########################################################################
 
-        @info "Ensemble size: $(N_ens)"
-        param_state = zeros(N_iter+1, size(initial_params)...)
-        param_state[1,:,:] = initial_params
-            
-        count = 0
-        for i in 1:N_iter             
+function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
+    (; x0, y, R_inv_var, ic_cov_sqrt, lorenz_cfg, obs_cfg, nx, nu, ny, prior) = prob
 
-            # For second order scheme, the state is doubled to hold a momentum-type variable. so only take 1:ndims(prior):
-            params_i_unconstrained = param_state[i,1:ndims(prior),:]
-            # transform as we don't use "ekp"
-            params_i = transform_unconstrained_to_constrained(prior, params_i_unconstrained)
-                   
-            # Calculating RMSE_e
-            ens_mean = mean(params_i, dims = 2)[:]
-            G_ens_mean = lorenz_forward(
-                EnsembleMemberConfig(exp.(ens_mean)),
-                x0 .+ ic_cov_sqrt * rand(rng, Normal(0.0, 1.0), nx, 1),
-                lorenz_config_settings,
-                observation_config,
-            )
-            RMSE_e = norm(R_inv_var * (y - G_ens_mean[:])) / sqrt(size(y, 1))
-            @info "RMSE (at G(u_mean)): $(RMSE_e)"
-                # Convergence criteria
-            if RMSE_e < target_rmse
-                conv_alg_iters[ee, rr] = count * N_ens
-                final_parameters[ee, rr, :] = ens_mean
-                final_model_output[ee, rr, :] = G_ens_mean
-                break
-            end
+    rng = MersenneTwister(rng_idx)
 
-            # If RMSE convergence criteria is not satisfied 
-            G_ens = reduce(hcat,
-                [
-                    lorenz_forward(
-                        EnsembleMemberConfig(exp.(params_i[:, j])),
-                        (x0 .+ ic_cov_sqrt * rand(rng, Normal(0.0, 1.0), nx, N_ens))[:, j],
-                        lorenz_config_settings,
-                        observation_config,
-                    ) for j in 1:N_ens
-                        ],
-            )
-            
-            # Update
-            param_state[i+1,:,:] = update_ensemble(
-                param_state[i,:,:], # here take full state (not params_i)
-                G_ens,
-                cbo_config.problem.cost,
-                cbo_config.weight_exponent,
-                cbo_config.Δt,
-                i,
-                cbo_config.model;
-                rng=rng
-            )
-            count = count + 1
-        end        
+    cbo_model = cfg.cbo_method == :CBO1 ?
+        FirstOrder(cfg.sigma, cfg.lambda, true) :
+        SecondOrder(cfg.sigma, cfg.inertia, true)
+
+    cbo_cfg = ConsensusBasedConfig(
+        WeightedQuadratic(y, R_inv_var),
+        cbo_model,
+        cfg.weight_exponent,
+        cfg.Δt,
+    )
+
+    initial_params = construct_initial_ensemble(rng, prior, N_ens)
+    # CBO2 state is [θ; momentum], so rows double to 2*nu
+    state_rows  = cfg.cbo_method == :CBO2 ? 2 * ndims(prior) : ndims(prior)
+    param_state = zeros(cfg.N_iter + 1, state_rows, N_ens)
+    param_state[1, 1:ndims(prior), :] = initial_params
+
+    conv_score   = NaN
+    final_params = fill(NaN, nu)
+    final_output = fill(NaN, ny)
+
+    count = 0
+    for i in 1:cfg.N_iter
+        params_i_unconstrained = param_state[i, 1:ndims(prior), :]
+        params_i = transform_unconstrained_to_constrained(prior, params_i_unconstrained)
+
+        ens_mean   = mean(params_i, dims=2)[:]
+        G_ens_mean = lorenz_forward(
+            EnsembleMemberConfig(exp.(ens_mean)),
+            x0 .+ ic_cov_sqrt * randn(rng, nx),
+            lorenz_cfg, obs_cfg,
+        )
+        RMSE_e = norm(R_inv_var * (y - G_ens_mean[:])) / sqrt(ny)
+
+        if RMSE_e < rmse_target
+            conv_score   = count * N_ens
+            final_params = ens_mean
+            final_output = G_ens_mean[:]
+            break
+        end
+
+        ic_pert = x0 .+ ic_cov_sqrt * randn(rng, nx, N_ens)
+        G_ens = reduce(hcat, [
+            lorenz_forward(
+                EnsembleMemberConfig(exp.(params_i[:, j])),
+                ic_pert[:, j],
+                lorenz_cfg, obs_cfg,
+            ) for j in 1:N_ens
+        ])
+
+        param_state[i+1, :, :] = update_ensemble(
+            param_state[i, :, :],
+            G_ens,
+            cbo_cfg.problem.cost,
+            cbo_cfg.weight_exponent,
+            cbo_cfg.Δt,
+            i,
+            cbo_cfg.model;
+            rng = rng,
+        )
+        count += 1
+    end
+
+    @info "N_ens=$(N_ens)  rmse_target=$(rmse_target)  rng_idx=$(rng_idx)  conv=$(conv_score)"
+    return (; conv_score, final_params, final_output)
+end
+
+########################################################################
+###############  Main  ################################################
+########################################################################
+
+function main()
+    cfg   = experiment_config(:l63)
+    tasks = flat_tasks(cfg)
+    tidx  = task_index_from_args()
+
+    output_dir = joinpath(@__DIR__, "output")
+    mkpath(output_dir)
+    prob = build_l63_problem(output_dir)
+
+    run_cells = tidx === nothing ? eachindex(tasks) : [tidx]
+
+    for t in run_cells
+        N_ens, rmse_target, rng_idx = tasks[t]
+        @info "Task $t: N_ens=$(N_ens)  rmse_target=$(rmse_target)  rng_idx=$(rng_idx)"
+        result = run_one(cfg, N_ens, rmse_target, rng_idx, prob)
+        fn = joinpath(output_dir, result_filename(cfg, N_ens, rmse_target, rng_idx))
+        JLD2.save(fn,
+            "conv_score",   result.conv_score,
+            "final_params", result.final_params,
+            "final_output", result.final_output,
+            "N_ens",        N_ens,
+            "rmse_target",  rmse_target,
+            "rng_idx",      rng_idx,
+        )
+        @info "Saved: $fn"
     end
 end
 
-
-
-
-
-# Saving data:
-using Dates
-date_of_exp = today()
-data_filename = joinpath(output_dir, "l63_output_$(today()).jld2")
-JLD2.save(
-    data_filename,
-    "configuration",
-    configuration,
-    "method_names",
-    method_names,
-    "conv_alg_iters",
-    conv_alg_iters,
-    "final_parameters",
-    final_parameters,
-    "final_model_output",
-    final_model_output,
-)
-
-# need rng, ens size, rmse target, algorithm name,
-# then matrix will be the # iterations.
-
-
+main()
