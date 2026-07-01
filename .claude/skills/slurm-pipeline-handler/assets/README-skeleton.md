@@ -4,11 +4,10 @@
 
 ## One-time setup
 
-In `experiment_config.jl`, pin the run date before starting a batch:
-
-```julia
-calibrate_date = Date("<YYYY-MM-DD>", "yyyy-mm-dd")
-```
+The run date is set automatically: `submit_*.sh` computes `RUN_DATE` once and threads
+it through every job in the pipeline; `experiment_config.jl` reads it from the
+environment and falls back to `today()` for local runs — no manual pinning needed.
+See "Pin the run date via RUN_DATE" in the `slurm-pipeline-handler` skill.
 
 Precompile once before array jobs:
 
@@ -62,11 +61,13 @@ All four cases can run simultaneously — output paths are case-specific.
 
 ```bash
 # L63
+RUN_DATE=$(date +%Y-%m-%d)
 STAGE1_JID=$(sbatch --parsable -A esm \
-             --export=ALL,SCRIPT=<SCRIPT_L63> <STAGE1>.sbatch)
+             --export=ALL,SCRIPT=<SCRIPT_L63>,RUN_DATE=${RUN_DATE} <STAGE1>.sbatch)
 sbatch -A esm \
        --dependency=afterok:${STAGE1_JID} \
        --kill-on-invalid-dep=yes \
+       --export=ALL,RUN_DATE=${RUN_DATE} \
        <STAGE2>.sbatch
 ```
 

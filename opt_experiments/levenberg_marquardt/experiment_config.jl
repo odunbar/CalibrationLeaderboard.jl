@@ -6,9 +6,9 @@ using Dates
 experiments = [:l63, :l96_const, :l96_vec, :l96_flux]
 EXPERIMENT = experiments[3]
 
-# PIN this before submitting an array job:
-# run_date = Date("YYYY-MM-DD", "yyyy-mm-dd")
-run_date = today()
+# Pinned at submission time via RUN_DATE env var (set by submit_*.sh).
+# Falls back to today() for local runs.
+run_date = haskey(ENV, "RUN_DATE") ? Date(ENV["RUN_DATE"]) : today()
 
 ########################################################################
 ###############  PER-CASE CONFIG  #####################################

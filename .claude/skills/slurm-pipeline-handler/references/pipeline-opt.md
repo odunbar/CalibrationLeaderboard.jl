@@ -1,18 +1,22 @@
 # OPT Pipeline Reference
 
-The OPT experiments (`opt_experiments/`) currently have **no SLURM support**.
+Most OPT experiments (`opt_experiments/`) still have **no SLURM support**.
 This document specifies the target pipeline to build, modeled on the UQ example.
 
-## Current state (as of 2026-06-25)
+## Current state (as of 2026-06-30)
 
 | Experiment | Local scripts | SLURM | experiment_config.jl |
 |---|---|---|---|
 | `adam/` | run_l63_adam.jl, run_l96_adam.jl, run_to_leaderboard.jl | ✅ hpc-variant/ | ✅ |
+| `levenberg_marquardt/` | run_l63_lm.jl, run_l96_lm.jl, run_to_leaderboard.jl | ✅ hpc-variant/ | ✅ (RUN_DATE convention) |
 | `ensemble_kalman_processes/` | run_l63_example.jl, run_l96_example.jl | ❌ | ❌ |
 | `consensus_based_optimization/` | run_l63_example_cbo.jl, run_l96_example_cbo.jl | ❌ | ❌ |
 | `batch_stochastic_gradient_descent/` | — (empty) | ❌ | ❌ |
 
-`opt_experiments/adam/hpc-variant/` is the canonical OPT pipeline reference.
+`opt_experiments/adam/hpc-variant/` is the canonical reference for overall layout.
+`opt_experiments/levenberg_marquardt/` is the canonical reference for the `RUN_DATE`
+convention (see "Pin the run date via RUN_DATE" in SKILL.md) — prefer it as the
+template for new methods, and consider porting `adam/` to match.
 
 ## Target dependency graph
 
@@ -143,17 +147,18 @@ julia --project=. run_to_leaderboard.jl
 OPT run scripts use `@__DIR__` for `common/` includes but a bare `include("experiment_config.jl")`
 for config. This means you do NOT need to copy scripts into `hpc-variant/`. Instead:
 
-**Directory structure (with shared preliminaries — adam is the canonical example):**
+**Directory structure (with shared preliminaries — levenberg_marquardt is the
+canonical example of the RUN_DATE convention; adam is the canonical example of
+the overall layout):**
 ```
 <method>/
-├── experiment_config.jl         ← local version (run_date = today())
+├── experiment_config.jl         ← single config: reads RUN_DATE env var, falls back to today()
 ├── l63_preliminaries.jl         ← compute/save shared L63 setup once before array
 ├── l96_preliminaries.jl         ← same for L96; case via EXPERIMENT env var
 ├── run_l63_<method>.jl          ← stays here; NOT copied to hpc-variant/
 ├── run_l96_<method>.jl
 ├── run_to_leaderboard.jl
 └── hpc-variant/
-    ├── experiment_config.jl     ← HPC version (pin run_date before submitting)
     ├── preliminaries.sbatch     ← single serial pre-stage job
     ├── run_array.sbatch
     ├── leaderboard.sbatch
@@ -173,9 +178,13 @@ cd "${SLURM_SUBMIT_DIR}"                              # = hpc-variant/
 julia --project=.. "../${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
 ```
 
-- `pwd = hpc-variant/` → bare `include("experiment_config.jl")` picks up HPC-pinned config ✓
+- `include("experiment_config.jl")` resolves relative to the script's own directory
+  (`<method>/`, not `pwd`) → always picks up the single shared config ✓
 - `@__DIR__ = <method>/` (script's real location) → `../../common` paths resolve correctly ✓
 - `--project=..` → uses `<method>/Project.toml` ✓
+- `RUN_DATE` set by `submit_*.sh` and passed via `--export` is what makes that shared
+  config resolve to the right date for this run — see "Pin the run date via RUN_DATE"
+  in SKILL.md.
 
 **Log paths** in OPT sbatch must use `../output/slurm/` (not `output/slurm/`):
 ```

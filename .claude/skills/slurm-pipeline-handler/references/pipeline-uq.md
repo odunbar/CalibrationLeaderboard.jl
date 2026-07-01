@@ -92,7 +92,13 @@ EXPERIMENT=l96_vec julia --project=. calibrate_l96.jl 7
 
 ## One-time setup checklist
 
-1. Pin `calibrate_date` in `experiment_config.jl` before submitting.
+1. `calibrate_date` should follow the same `RUN_DATE`-style convention as OPT (see
+   "Pin the run date via RUN_DATE" in SKILL.md and `opt_experiments/levenberg_marquardt/`
+   for the worked example): `submit_*.sh` computes the date once and passes it via
+   `--export=ALL,...,CALIBRATE_DATE=${CALIBRATE_DATE}` on every stage, and
+   `experiment_config.jl` reads it with a `today()` fallback for local runs. This UQ
+   pipeline has not yet been migrated off manual pinning — treat it as the next
+   candidate, not as already done.
 2. Run `submit_precompile.sh [EXP_ID]` once (or after any package update).
 3. Submit cases simultaneously: `for s in submit_l63.sh ...; do bash "$s" run1 & done; wait`.
 4. Smoke test first: `sbatch --array=1-1 --export=ALL,SCRIPT=calibrate_l63.jl calibrate_array.sbatch`.

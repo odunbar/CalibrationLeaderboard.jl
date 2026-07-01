@@ -10,6 +10,7 @@ set -euo pipefail
 
 EXP_ID=${1:-}
 LABEL="<CASE_SHORT>${EXP_ID:+_${EXP_ID}}"
+RUN_DATE=$(date +%Y-%m-%d)
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 cd "$DIR"
@@ -17,13 +18,14 @@ mkdir -p output/slurm
 
 echo "NOTE: This script does not precompile. Run bash submit_precompile.sh first"
 echo "      if you haven't done so recently (e.g. after a fresh checkout or package update)."
+echo "  run_date pinned to ${RUN_DATE} for all jobs in this pipeline."
 
 # ── Stage 1: array job ────────────────────────────────────────────────────────
 echo "=== Submitting <STAGE1_NAME> (<CASE_LABEL>) ==="
 STAGE1_JID=$(sbatch --parsable \
                     -A esm \
                     --job-name="<STAGE1_SHORT>_${LABEL}" \
-                    --export=ALL,SCRIPT=<SCRIPT_L63_OR_L96>,EXPERIMENT=<EXPERIMENT_VAL> \
+                    --export=ALL,SCRIPT=<SCRIPT_L63_OR_L96>,EXPERIMENT=<EXPERIMENT_VAL>,RUN_DATE=${RUN_DATE} \
                     <STAGE1_SBATCH>)
 echo "  <STAGE1_NAME> job ID: ${STAGE1_JID}"
 
@@ -34,9 +36,14 @@ STAGE2_JID=$(sbatch --parsable \
                     --job-name="<STAGE2_SHORT>_${LABEL}" \
                     --dependency=afterok:${STAGE1_JID} \
                     --kill-on-invalid-dep=yes \
-                    --export=ALL,EXPERIMENT=<EXPERIMENT_VAL> \
+                    --export=ALL,EXPERIMENT=<EXPERIMENT_VAL>,RUN_DATE=${RUN_DATE} \
                     <STAGE2_SBATCH>)
 echo "  <STAGE2_NAME> job ID: ${STAGE2_JID}"
+
+# Every sbatch call in the chain must carry RUN_DATE=${RUN_DATE} — missing it on
+# even one stage means that stage's tasks fall back to today() in
+# experiment_config.jl and can write to a different output directory than the
+# rest of the pipeline.
 
 # Add further stages following the same pattern.
 # Use afterok when the next stage REQUIRES success; afterany when it should

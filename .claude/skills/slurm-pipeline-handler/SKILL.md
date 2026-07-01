@@ -86,15 +86,45 @@ Document the per-case formula in the submit script comment so it stays in sync.
 | No auto-precompile | `JULIA_PKG_PRECOMPILE_AUTO=0` | All non-precompile sbatch files |
 | Log dir | `../output/slurm/` | All `--output` / `--error` (OPT); `output/slurm/` (UQ) |
 
-## Pin the run date before submitting
+## Pin the run date via RUN_DATE, not by hand-editing experiment_config.jl
 
-In `experiment_config.jl`, comment out `today()` and pin the date before submitting:
-```julia
-run_date = Date("2026-06-25", "yyyy-mm-dd")   # OPT
-# calibrate_date = Date("2026-06-04", "yyyy-mm-dd")  # UQ
+All array tasks in a pipeline must write to the same output directory, so the run
+date has to be fixed once at submission time. Two older approaches both fail this:
+`today()` can drift across a midnight boundary mid-pipeline, and manually pinning
+`run_date = Date("2026-06-25", "yyyy-mm-dd")` in `experiment_config.jl` is easy to
+forget to undo (the next local run silently reuses a stale date).
+
+The fix: the **submit script** decides and owns the date — `experiment_config.jl`
+just reads it, falling back to `today()` only when nothing was passed in (i.e. local
+runs).
+
+**In `submit_*.sh`**, compute it once, right after `LABEL` is set and before any
+`sbatch` calls:
+```bash
+RUN_DATE=$(date +%Y-%m-%d)
 ```
-This ensures all array tasks write to the same output directory. Unpin after the run.
-The submit scripts should echo a reminder to do this.
+Then thread it through **every** `sbatch --export=ALL,...` call in the chain —
+preliminaries, run_array, leaderboard, every stage, no exceptions:
+```bash
+--export=ALL,SCRIPT=l63_preliminaries.jl,EXPERIMENT=l63,RUN_DATE=${RUN_DATE}
+--export=ALL,SCRIPT=run_l63_<method>.jl,EXPERIMENT=l63,RUN_DATE=${RUN_DATE}
+--export=ALL,EXPERIMENT=l63,RUN_DATE=${RUN_DATE}
+```
+Missing `RUN_DATE` on even one stage reintroduces the original bug: that stage's
+tasks fall back to `today()` and can land in a different output directory than the
+rest of the pipeline.
+
+**In `experiment_config.jl`** (env var name matches the variable it controls —
+`RUN_DATE` for `run_date` in OPT, `CALIBRATE_DATE` for `calibrate_date` in UQ):
+```julia
+run_date = haskey(ENV, "RUN_DATE") ? Date(ENV["RUN_DATE"]) : today()
+```
+Local runs have no `RUN_DATE` in `ENV`, so they fall through to `today()` automatically
+— no manual pin/unpin step, and nothing left over to forget after a run finishes.
+
+`opt_experiments/levenberg_marquardt/` is the worked, canonical example of this
+end-to-end: see `experiment_config.jl` and `hpc-variant/submit_l63.sh` /
+`submit_l96_const.sh` / `submit_l96_vec.sh` / `submit_l96_flux.sh`.
 
 **One config only.** No separate `hpc-variant/experiment_config.jl`. Local and HPC share.
 
@@ -179,21 +209,23 @@ Use `afterany` (not `afterok`) for the leaderboard: `run_to_leaderboard` reads w
 JLD2 files exist and warns on missing ones, so it should fire even if some array tasks failed.
 
 ```bash
+RUN_DATE=$(date +%Y-%m-%d)   # computed once in submit_*.sh; threaded through every stage below
+
 PRELIM_JID=$(sbatch --parsable -A esm \
                     --job-name="prelim_${LABEL}" \
-                    --export=ALL,SCRIPT=l63_preliminaries.jl,EXPERIMENT=l63 \
+                    --export=ALL,SCRIPT=l63_preliminaries.jl,EXPERIMENT=l63,RUN_DATE=${RUN_DATE} \
                     preliminaries.sbatch)
 
 RUN_JID=$(sbatch --parsable -A esm \
                  --job-name="run_${LABEL}" \
                  --dependency=afterok:${PRELIM_JID} --kill-on-invalid-dep=yes \
-                 --export=ALL,SCRIPT=run_l63_<method>.jl,EXPERIMENT=l63 \
+                 --export=ALL,SCRIPT=run_l63_<method>.jl,EXPERIMENT=l63,RUN_DATE=${RUN_DATE} \
                  run_array.sbatch)
 
 LB_JID=$(sbatch --parsable -A esm \
                 --job-name="leaderboard_${LABEL}" \
                 --dependency=afterany:${RUN_JID} --kill-on-invalid-dep=yes \
-                --export=ALL,EXPERIMENT=l63 \
+                --export=ALL,EXPERIMENT=l63,RUN_DATE=${RUN_DATE} \
                 leaderboard.sbatch)
 ```
 
@@ -201,7 +233,7 @@ LB_JID=$(sbatch --parsable -A esm \
 
 ```
 <method>/
-├── experiment_config.jl         ← single config (pin run_date before submitting)
+├── experiment_config.jl         ← single config (reads RUN_DATE env var, falls back to today())
 ├── l63_preliminaries.jl
 ├── l96_preliminaries.jl
 ├── run_l63_<method>.jl
@@ -238,7 +270,10 @@ See `references/pipeline-uq.md` for the full dependency graph and sbatch table.
 1. Check whether the run scripts already have `task_index_from_args()`, `l96_experiment()`,
    and `flat_tasks()` in their `main()`. If not, add them. Adam already has these; older
    methods (EKP, CBO) may not.
-2. Create `experiment_config.jl` in the method directory with `run_date = today()`.
+2. Create `experiment_config.jl` in the method directory with
+   `run_date = haskey(ENV, "RUN_DATE") ? Date(ENV["RUN_DATE"]) : today()` (see
+   "Pin the run date via RUN_DATE" above; `opt_experiments/levenberg_marquardt/`
+   is the worked example).
 3. Create `hpc-variant/` — put only sbatch + submit files there, no Julia scripts.
 4. Array sbatch = one task per `(N_ens, rng_idx)` cell.
 5. After the array completes, a single `leaderboard.sbatch` runs `run_to_leaderboard.jl`.
