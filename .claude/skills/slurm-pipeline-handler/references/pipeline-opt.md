@@ -142,53 +142,11 @@ EXPERIMENT=l96_vec julia --project=. run_l96_<method>.jl 5
 julia --project=. run_to_leaderboard.jl
 ```
 
-## hpc-variant/ layout for OPT (adam is the canonical example)
+## hpc-variant/ layout for OPT
 
-OPT run scripts use `@__DIR__` for `common/` includes but a bare `include("experiment_config.jl")`
-for config. This means you do NOT need to copy scripts into `hpc-variant/`. Instead:
-
-**Directory structure (with shared preliminaries — levenberg_marquardt is the
-canonical example of the RUN_DATE convention; adam is the canonical example of
-the overall layout):**
-```
-<method>/
-├── experiment_config.jl         ← single config: reads RUN_DATE env var, falls back to today()
-├── l63_preliminaries.jl         ← compute/save shared L63 setup once before array
-├── l96_preliminaries.jl         ← same for L96; case via EXPERIMENT env var
-├── run_l63_<method>.jl          ← stays here; NOT copied to hpc-variant/
-├── run_l96_<method>.jl
-├── run_to_leaderboard.jl
-└── hpc-variant/
-    ├── preliminaries.sbatch     ← single serial pre-stage job
-    ├── run_array.sbatch
-    ├── leaderboard.sbatch
-    ├── precompile.sbatch
-    ├── submit_precompile.sh
-    ├── submit_l63.sh
-    └── submit_l96_*.sh
-```
-
-**Without shared preliminaries** (method has no expensive shared setup), omit the
-`l*_preliminaries.jl` scripts and `preliminaries.sbatch` entirely — the layout and
-chains revert to the simpler `run_array →(afterok)→ leaderboard` form.
-
-**sbatch invocation pattern** (submit from `hpc-variant/`, run from `<method>/`):
-```bash
-cd "${SLURM_SUBMIT_DIR}"                              # = hpc-variant/
-julia --project=.. "../${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
-```
-
-- `include("experiment_config.jl")` resolves relative to the script's own directory
-  (`<method>/`, not `pwd`) → always picks up the single shared config ✓
-- `@__DIR__ = <method>/` (script's real location) → `../../common` paths resolve correctly ✓
-- `--project=..` → uses `<method>/Project.toml` ✓
-- `RUN_DATE` set by `submit_*.sh` and passed via `--export` is what makes that shared
-  config resolve to the right date for this run — see "Pin the run date via RUN_DATE"
-  in SKILL.md.
-
-**Log paths** in OPT sbatch must use `../output/slurm/` (not `output/slurm/`):
-```
-#SBATCH --output=../output/slurm/run_%A_%a.out
-```
-
-**Submit scripts** do `mkdir -p ../output/slurm` and submit sbatch from within `hpc-variant/`.
+Same convention as UQ — see "hpc-variant layout: one copy, no duplication" in
+SKILL.md for the directory structure, the `../${SCRIPT}` invocation pattern,
+and why scripts aren't copied. `adam/` is the canonical example of the overall
+layout; `levenberg_marquardt/` is the canonical example of the `RUN_DATE`
+convention. Without shared preliminaries, the layout and chain simplify to
+`run_array →(afterok)→ leaderboard`.

@@ -18,13 +18,16 @@ description: >-
 
 # SLURM Pipeline Handler
 
-The canonical reference for how pipelines should look is
-`uq_experiments/calibrate_emulate_sample/`. The UQ pipeline has
-excellent SLURM organization; the OPT experiments currently have **none**.
-This skill creates or extends SLURM pipelines following those conventions.
+`uq_experiments/GaussNewtonKalmanInversion/` and `opt_experiments/levenberg_marquardt/`
+are the canonical examples: one copy of every `.jl` script and of
+`experiment_config.jl`, living in the method directory; `hpc-variant/` holds
+only sbatch + submit scripts (see "hpc-variant layout" below for why and how).
+`uq_experiments/calibrate_emulate_sample/` established the original UQ stage
+names and array-sbatch conventions and is worth reading for shape, but its
+`hpc-variant/` duplicates every script — a legacy pattern, not one to copy.
 
 Read `references/pipeline-uq.md` for the full UQ pipeline spec.
-Read `references/pipeline-opt.md` for the OPT pipeline spec (to be built).
+Read `references/pipeline-opt.md` for the full OPT pipeline spec.
 
 ## Core design principle: one set of .jl scripts, two run modes
 
@@ -84,49 +87,38 @@ Document the per-case formula in the submit script comment so it stays in sync.
 | CPU target | `JULIA_CPU_TARGET="cascadelake"` | `precompile.sbatch` only |
 | Thread count | `${SLURM_CPUS_PER_TASK}` | `JULIA_NUM_THREADS` + `OPENBLAS_NUM_THREADS` |
 | No auto-precompile | `JULIA_PKG_PRECOMPILE_AUTO=0` | All non-precompile sbatch files |
-| Log dir | `../output/slurm/` | All `--output` / `--error` (OPT); `output/slurm/` (UQ) |
+| Log dir | `../output/slurm/` | All `--output`/`--error` (legacy exception: `calibrate_emulate_sample` uses `output/slurm/` with no `../`, since its `hpc-variant/` keeps a separate output tree — don't copy that) |
 
-## Pin the run date via RUN_DATE, not by hand-editing experiment_config.jl
+## Pin the run date via RUN_DATE / CALIBRATE_DATE
 
-All array tasks in a pipeline must write to the same output directory, so the run
-date has to be fixed once at submission time. Two older approaches both fail this:
-`today()` can drift across a midnight boundary mid-pipeline, and manually pinning
-`run_date = Date("2026-06-25", "yyyy-mm-dd")` in `experiment_config.jl` is easy to
-forget to undo (the next local run silently reuses a stale date).
+All array tasks in a pipeline must write to the same output directory, so the
+date has to be fixed once at submission time. `today()` drifts across a
+midnight boundary mid-pipeline; hand-pinning `run_date = Date("2026-06-25", ...)`
+in `experiment_config.jl` is easy to forget to undo. The fix: the **submit
+script** decides and owns the date — `experiment_config.jl` just reads it,
+falling back to `today()` for local runs.
 
-The fix: the **submit script** decides and owns the date — `experiment_config.jl`
-just reads it, falling back to `today()` only when nothing was passed in (i.e. local
-runs).
-
-**In `submit_*.sh`**, compute it once, right after `LABEL` is set and before any
-`sbatch` calls:
+**In `submit_*.sh`**, compute it once and thread it through **every**
+`sbatch --export=ALL,...` call in the chain — preliminaries, array, leaderboard,
+no exceptions:
 ```bash
 RUN_DATE=$(date +%Y-%m-%d)
-```
-Then thread it through **every** `sbatch --export=ALL,...` call in the chain —
-preliminaries, run_array, leaderboard, every stage, no exceptions:
-```bash
---export=ALL,SCRIPT=l63_preliminaries.jl,EXPERIMENT=l63,RUN_DATE=${RUN_DATE}
+# ...
 --export=ALL,SCRIPT=run_l63_<method>.jl,EXPERIMENT=l63,RUN_DATE=${RUN_DATE}
---export=ALL,EXPERIMENT=l63,RUN_DATE=${RUN_DATE}
 ```
-Missing `RUN_DATE` on even one stage reintroduces the original bug: that stage's
-tasks fall back to `today()` and can land in a different output directory than the
-rest of the pipeline.
+Missing it on even one stage reintroduces the bug: that stage falls back to
+`today()` and can land in a different output directory than the rest.
 
-**In `experiment_config.jl`** (env var name matches the variable it controls —
-`RUN_DATE` for `run_date` in OPT, `CALIBRATE_DATE` for `calibrate_date` in UQ):
+**In `experiment_config.jl`** (env var name matches the variable — `RUN_DATE`
+for OPT's `run_date`, `CALIBRATE_DATE` for UQ's `calibrate_date`):
 ```julia
 run_date = haskey(ENV, "RUN_DATE") ? Date(ENV["RUN_DATE"]) : today()
 ```
-Local runs have no `RUN_DATE` in `ENV`, so they fall through to `today()` automatically
-— no manual pin/unpin step, and nothing left over to forget after a run finishes.
-
-`opt_experiments/levenberg_marquardt/` is the worked, canonical example of this
-end-to-end: see `experiment_config.jl` and `hpc-variant/submit_l63.sh` /
-`submit_l96_const.sh` / `submit_l96_vec.sh` / `submit_l96_flux.sh`.
-
-**One config only.** No separate `hpc-variant/experiment_config.jl`. Local and HPC share.
+Treat this as standard practice for any new pipeline, UQ or OPT — not an
+aspirational nice-to-have. Worked examples: `opt_experiments/levenberg_marquardt/`,
+`uq_experiments/GaussNewtonKalmanInversion/`. `calibrate_emulate_sample` still
+hand-pins `calibrate_date`; that's a known gap in the older pipeline, not a
+pattern to copy.
 
 ## Precompile job — always separate
 
@@ -137,15 +129,14 @@ This avoids dozens of array tasks racing to precompile.
 ## Serial pre-stage job (preliminaries pattern)
 
 When run scripts share expensive setup (truth data, obs covariances, ICs), a
-`"compute-if-missing"` guard inside the run script becomes a race condition on HPC:
-multiple array tasks start simultaneously and all try to write the same file.
-
-**The fix:** extract the setup into `l*_preliminaries.jl` and run it as a single
-serial SLURM job before the array starts.
+`"compute-if-missing"` guard becomes a race condition on HPC — multiple array
+tasks start simultaneously and all try to compute/write the same file. Extract
+the setup into `l*_preliminaries.jl` and run it as one serial SLURM job before
+the array starts.
 
 ### When to apply
 
-Look for a `build_*_problem()` function containing:
+Look for:
 ```julia
 if isfile(prelim_file)
     ld = load_preliminaries(prelim_file)
@@ -154,168 +145,130 @@ else
     save_preliminaries(pdc, prelim_file)
 end
 ```
-That guard is a local-run convenience. Extract the `else` branch into its own script.
+Extract the `else` branch into its own script.
+
+**Watch for the partial fix**, where only the *write* is gated and the
+computation above it still runs unconditionally every task:
+```julia
+setup = build_setup(cfg)   # computed every task, regardless
+if !isfile(prelim_file)
+    try; save_preliminaries(setup.pdc, prelim_file); catch; end
+end
+```
+This looks safe (`isfile` + `try/catch`) but isn't: it wastes the computation
+N times (e.g. retraining a small neural net 180 times instead of once), and
+the write can still race — the `try/catch` only stops the crash, not the torn
+write. `calibrate_emulate_sample/hpc-variant/calibrate_l63.jl` has exactly
+this shape. The real fix moves the *whole* computation, not just the save
+call, into the prelim script.
 
 ### The three-part change
 
-**1. Create `l63_preliminaries.jl` / `l96_preliminaries.jl` (in `<method>/`)**
+1. **`l63_preliminaries.jl` / `l96_preliminaries.jl`** (in `<method>/`): compute
+   and save unconditionally, no existence check. For L96, dispatch via
+   `l96_experiment()` / `experiment_config(experiment).force_case` so
+   `EXPERIMENT=l96_const julia --project=. l96_preliminaries.jl` works locally too.
+2. **Run scripts become load-or-error**: `isfile(prelim_file) || error("... run l63_preliminaries.jl first.")`,
+   then `load_preliminaries(prelim_file)`. Per-task setup (priors, forcing
+   params, NN structure) stays in the run script — only the shared expensive
+   part moves to the prelim script.
+3. **`hpc-variant/preliminaries.sbatch`**: single job, no `--array`, same
+   `cd "${SLURM_SUBMIT_DIR}"` path trick as the other stages, `SCRIPT=${SCRIPT:-l63_preliminaries.jl}`
+   for env-var dispatch. Mirrors `leaderboard.sbatch`.
 
-Computes and saves unconditionally — no existence check:
-
-```julia
-function main()
-    rng_i = MersenneTwister(11)    # fixed seed for reproducibility
-    pdc = compute_perfect_data(...)
-    save_preliminaries(pdc, prelim_file)
-    @info "Saved preliminaries to $prelim_file"
-end
-main()
-```
-
-For L96, use `l96_experiment()` / `experiment_config(experiment).force_case` so
-`EXPERIMENT=l96_const julia --project=. l96_preliminaries.jl` works locally too.
-
-**2. Simplify `build_*_problem()` in the run scripts to load-or-error**
-
-```julia
-function build_l63_problem(output_dir)
-    prelim_file = joinpath(output_dir, "l63_computed_preliminaries.jld2")
-    isfile(prelim_file) || error("Prelim file not found: $prelim_file\nRun l63_preliminaries.jl first.")
-    ld = load_preliminaries(prelim_file)
-    @info "Loaded L63 preliminaries from $prelim_file"
-    return (; x0 = ld.x0, y = ld.y, R = ld.R, R_inv_var = ld.R_inv_var,
-              ic_cov_sqrt = ld.ic_cov_sqrt,
-              lorenz_cfg  = ld.lorenz_config_settings,
-              obs_cfg     = ld.observation_config, nx = 3)
-end
-```
-
-Per-task setup (prior distributions, forcing parameters, NN structure) stays in
-`build_*_problem()` — only the shared expensive computation moves to the prelim script.
-
-**3. Create `hpc-variant/preliminaries.sbatch`**
-
-Mirror `leaderboard.sbatch`: single job, no `--array`, same `cd ${SLURM_SUBMIT_DIR}`
-path trick. No `${SLURM_ARRAY_TASK_ID}` argument — the prelim script runs once, not
-once per cell. Use `SCRIPT=${SCRIPT:-l63_preliminaries.jl}` for the env-var dispatch.
-
-### Submit chain with preliminaries
-
-```
-preliminaries  →(afterok)→  run_array  →(afterany)→  leaderboard
-```
-
-Use `afterany` (not `afterok`) for the leaderboard: `run_to_leaderboard` reads whatever
-JLD2 files exist and warns on missing ones, so it should fire even if some array tasks failed.
-
-```bash
-RUN_DATE=$(date +%Y-%m-%d)   # computed once in submit_*.sh; threaded through every stage below
-
-PRELIM_JID=$(sbatch --parsable -A esm \
-                    --job-name="prelim_${LABEL}" \
-                    --export=ALL,SCRIPT=l63_preliminaries.jl,EXPERIMENT=l63,RUN_DATE=${RUN_DATE} \
-                    preliminaries.sbatch)
-
-RUN_JID=$(sbatch --parsable -A esm \
-                 --job-name="run_${LABEL}" \
-                 --dependency=afterok:${PRELIM_JID} --kill-on-invalid-dep=yes \
-                 --export=ALL,SCRIPT=run_l63_<method>.jl,EXPERIMENT=l63,RUN_DATE=${RUN_DATE} \
-                 run_array.sbatch)
-
-LB_JID=$(sbatch --parsable -A esm \
-                --job-name="leaderboard_${LABEL}" \
-                --dependency=afterany:${RUN_JID} --kill-on-invalid-dep=yes \
-                --export=ALL,EXPERIMENT=l63,RUN_DATE=${RUN_DATE} \
-                leaderboard.sbatch)
-```
-
-### hpc-variant layout (with preliminaries)
-
-```
-<method>/
-├── experiment_config.jl         ← single config (reads RUN_DATE env var, falls back to today())
-├── l63_preliminaries.jl
-├── l96_preliminaries.jl
-├── run_l63_<method>.jl
-├── run_l96_<method>.jl
-├── run_to_leaderboard.jl
-└── hpc-variant/
-    ├── preliminaries.sbatch
-    ├── run_array.sbatch
-    ├── leaderboard.sbatch
-    ├── precompile.sbatch
-    ├── submit_precompile.sh
-    ├── submit_l63.sh
-    └── submit_l96_*.sh
-```
+Chain: `preliminaries →(afterok)→ run_array →(afterany)→ leaderboard` —
+`afterok` + `--kill-on-invalid-dep=yes` so a failed prelim stops wasted work;
+`afterany` on the leaderboard so it processes whatever ran, even if some array
+tasks failed. See `references/pipeline-uq.md` / `pipeline-opt.md` for full
+worked `sbatch --export=ALL,...` chains.
 
 ## Creating a pipeline for a new experiment
 
-### UQ pipeline (follow calibrate_emulate_sample as template)
+### UQ pipeline
 
-1. Identify the stages: `calibrate`, `emulate_sample`, `pushforward_from_posterior`,
-   `diagnostic_plots`, `exp_to_leaderboard`.
+1. Identify the stages: `calibrate`, optionally `emulate_sample`,
+   `pushforward_from_posterior`, optionally `diagnostic_plots`,
+   `exp_to_leaderboard`. Not every method needs all of them —
+   `GaussNewtonKalmanInversion` skips `emulate_sample`/`diagnostic_plots`
+   entirely because the raw ensemble at each iteration already is the
+   posterior sample set.
 2. Per-cell stages: use `array.sbatch` template. Serial stages: use `single_job.sbatch`.
-3. Create `submit_l63.sh`, `submit_l96_const.sh`, `submit_l96_vec.sh`, `submit_l96_flux.sh`
+3. Follow the "hpc-variant layout" convention below. Use
+   `uq_experiments/GaussNewtonKalmanInversion/` as the template — not
+   `calibrate_emulate_sample`, whose `hpc-variant/` duplicates every script.
+4. If run scripts share expensive setup, apply the **serial pre-stage
+   pattern** above — check for the write-only-gated partial fix too.
+5. Create `submit_l63.sh`, `submit_l96_const.sh`, `submit_l96_vec.sh`, `submit_l96_flux.sh`
    — each chains stages with `afterok` between array jobs and `afterany` before the leaderboard.
-4. Create `precompile.sbatch` + `submit_precompile.sh` from templates.
-5. Write or update `README.md` using `assets/README-skeleton.md`.
+6. Create `precompile.sbatch` + `submit_precompile.sh` from templates.
+7. Write or update `README.md` using `assets/README-skeleton.md`.
 
 See `references/pipeline-uq.md` for the full dependency graph and sbatch table.
 
 ### OPT pipeline
 
-`opt_experiments/adam/hpc-variant/` is the canonical reference. When adding SLURM to a new OPT method:
+`opt_experiments/adam/hpc-variant/` is the layout reference;
+`opt_experiments/levenberg_marquardt/` is the `RUN_DATE` reference. When adding
+SLURM to a new OPT method:
 
-1. Check whether the run scripts already have `task_index_from_args()`, `l96_experiment()`,
-   and `flat_tasks()` in their `main()`. If not, add them. Adam already has these; older
-   methods (EKP, CBO) may not.
-2. Create `experiment_config.jl` in the method directory with
-   `run_date = haskey(ENV, "RUN_DATE") ? Date(ENV["RUN_DATE"]) : today()` (see
-   "Pin the run date via RUN_DATE" above; `opt_experiments/levenberg_marquardt/`
-   is the worked example).
-3. Create `hpc-variant/` — put only sbatch + submit files there, no Julia scripts.
-4. Array sbatch = one task per `(N_ens, rng_idx)` cell.
-5. After the array completes, a single `leaderboard.sbatch` runs `run_to_leaderboard.jl`.
-6. If run scripts share expensive setup, apply the **serial pre-stage pattern** above.
-7. Dependency chain: `preliminaries` →(afterok)→ `run_array` →(afterany)→ `leaderboard`.
-   Without prelims: `run_array` →(afterany)→ `leaderboard`.
-8. `submit_l96_<case>.sh`: same pattern with `EXPERIMENT=l96_const|l96_vec|l96_flux`.
+1. Check whether the run scripts already have `task_index_from_args()`,
+   `l96_experiment()`, and `flat_tasks()` in their `main()`. Add them if not —
+   older methods (EKP, CBO) may lack these.
+2. Create `experiment_config.jl` with the `RUN_DATE` pattern above.
+3. Follow the "hpc-variant layout" convention below.
+4. Array sbatch = one task per `(N_ens, rng_idx)` cell; a single
+   `leaderboard.sbatch` runs `run_to_leaderboard.jl` after.
+5. If run scripts share expensive setup, apply the **serial pre-stage
+   pattern** above.
+6. `submit_l96_<case>.sh`: same pattern with `EXPERIMENT=l96_const|l96_vec|l96_flux`.
 
 See `references/pipeline-opt.md` for the dependency graph and stage table.
 
-## OPT hpc-variant layout: avoid copying scripts
+## hpc-variant layout: one copy, no duplication
 
-OPT run scripts stay in the method directory. `hpc-variant/` contains only sbatch and
-submit files — no `experiment_config.jl`, no Julia scripts:
+`hpc-variant/` holds only sbatch + submit scripts — no `experiment_config.jl`,
+no `.jl` files, no `Project.toml`. Everything else lives exactly once, in
+`<method>/`:
 
 ```
-adam/
+<method>/
 ├── experiment_config.jl
-├── run_l63_adam.jl
-├── run_l96_adam.jl
-├── run_to_leaderboard.jl
+├── l63_preliminaries.jl / l96_preliminaries.jl   ← optional, see preliminaries pattern
+├── calibrate_l63.jl / run_l63_<method>.jl
+├── calibrate_l96.jl / run_l96_<method>.jl
+├── exp_to_leaderboard.jl / run_to_leaderboard.jl
 └── hpc-variant/
-    ├── run_array.sbatch
-    ├── leaderboard.sbatch
+    ├── preliminaries.sbatch                       ← optional
+    ├── calibrate_array.sbatch / run_array.sbatch
+    ├── exp_to_leaderboard.sbatch / leaderboard.sbatch
     ├── precompile.sbatch
     ├── submit_precompile.sh
     ├── submit_l63.sh
     └── submit_l96_*.sh
 ```
 
-In every OPT sbatch file:
+Every sbatch file:
 ```bash
 cd "${SLURM_SUBMIT_DIR}"   # = hpc-variant/
 julia --project=.. "../${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
 ```
+- `--project=..` → `<method>/Project.toml`
+- `"../${SCRIPT}"` → the script's own `@__DIR__` resolves to `<method>/`, so
+  `common/` includes and `include("experiment_config.jl")` behave exactly as
+  in a local run. Verify a new path with
+  `julia -e 'println(isdir(normpath(joinpath(@__DIR__, "..", "..", "common"))))'`
+  from inside `hpc-variant/` before trusting it.
 
-- `--project=..` uses `adam/Project.toml`
-- `"../${SCRIPT}"` makes `@__DIR__` resolve to `adam/`, keeping `../../common` paths correct
-- `include("experiment_config.jl")` in the script resolves relative to the script's directory
-  (`adam/`), not the CWD — so there is always exactly one config
+Log paths use `../output/slurm/`; submit scripts do `mkdir -p ../output/slurm`.
+Worked examples: `levenberg_marquardt/`, `adam/`, `GaussNewtonKalmanInversion/`.
 
-Log paths use `../output/slurm/`; submit scripts use `mkdir -p ../output/slurm`.
+**Why not copy scripts into `hpc-variant/` instead**, as `calibrate_emulate_sample`
+does? It isn't broken — Julia's `include()` resolves relative to the
+including file's own directory, so a copied script genuinely does load a
+config copied alongside it. The problem is drift: bump `N_ens_sizes` in one
+copy and forget the other, and array tasks silently run stale settings.
+Referencing the original via `../${SCRIPT}` removes the second copy, so
+there's nothing left to drift.
 
 ## Adjusting array size
 
