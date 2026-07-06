@@ -110,7 +110,7 @@ function calibrate_one(cfg, N_ens, rng_idx, output_dir)
         rng = copy(rng),
         verbose = verbose_flag,
         localization_method = NoLocalization(),
-        scheduler = DataMisfitController(terminate_at = cfg.terminate_at),
+        scheduler = DefaultScheduler(),
     )
 
     for i in 1:cfg.N_iter
