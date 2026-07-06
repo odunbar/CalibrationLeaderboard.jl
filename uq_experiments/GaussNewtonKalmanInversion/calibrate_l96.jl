@@ -89,35 +89,17 @@ function calibrate_one(cfg, N_ens, rng_idx, output_dir)
     rng = MersenneTwister(rng_idx)
     force_case = cfg.force_case
     setup = force_case_setup(force_case)
-    nx, phi, phi_structure, sample_range, prior, T, inff = setup.nx, setup.phi, setup.phi_structure, setup.sample_range, setup.prior, setup.T, setup.inff
-    t = 0.01
+    nx, phi, phi_structure, sample_range, prior = setup.nx, setup.phi, setup.phi_structure, setup.sample_range, setup.prior
 
     prelim_file = joinpath(@__DIR__, "output", prelim_filename(cfg))
-    if isfile(prelim_file)
-        prelim = load_preliminaries(prelim_file)
-        x0                     = prelim.x0
-        y                      = prelim.y
-        lorenz_config_settings = prelim.lorenz_config_settings
-        observation_config     = prelim.observation_config
-        R                      = prelim.R
-        ic_cov_sqrt            = prelim.ic_cov_sqrt
-    else
-        rng_i = MersenneTwister(11)
-        pdc = compute_perfect_data(
-            phi, nx,
-            LorenzConfig(t, 1000.0), rand(rng_i, Normal(0.0, 1.0), nx),
-            LorenzConfig(t, T), ObservationConfig(4.0, T);
-            R_inflation = inff,
-        )
-        x0                     = pdc.x0
-        y                      = pdc.y
-        lorenz_config_settings = pdc.lorenz_config_settings
-        observation_config     = pdc.observation_config
-        R                      = pdc.R
-        ic_cov_sqrt            = pdc.ic_cov_sqrt
-        save_preliminaries(pdc, prelim_file)
-        @info "Saved computed quantities to $(prelim_file)"
-    end
+    isfile(prelim_file) || error("Prelim file not found: $(prelim_file)\nRun l96_preliminaries.jl first.")
+    prelim = load_preliminaries(prelim_file)
+    x0                     = prelim.x0
+    y                      = prelim.y
+    lorenz_config_settings = prelim.lorenz_config_settings
+    observation_config     = prelim.observation_config
+    R                      = prelim.R
+    ic_cov_sqrt            = prelim.ic_cov_sqrt
 
     # ── GNKI calibration ────────────────────────────────────────────────
     initial_params = construct_initial_ensemble(rng, prior, N_ens)

@@ -8,9 +8,10 @@ using Dates
 experiments = [:l63, :l96_const, :l96_vec, :l96_flux]
 EXPERIMENT = experiments[1]
 
-# Date identifying this calibration run — PIN before submitting an array job.
-#calibrate_date = Date("<YYYY-MM-DD>", "yyyy-mm-dd")
-calibrate_date = today()
+# Date identifying this calibration run — set once per pipeline submission via
+# the CALIBRATE_DATE env var (see hpc-variant/submit_*.sh); falls back to
+# today() for local runs where CALIBRATE_DATE is unset.
+calibrate_date = haskey(ENV, "CALIBRATE_DATE") ? Date(ENV["CALIBRATE_DATE"]) : today()
 
 ########################################################################
 ###############  SHARED CONSTANTS  ####################################

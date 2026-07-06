@@ -12,32 +12,41 @@ emulator/MCMC chain).
 
 ## One-time setup
 
-In `experiment_config.jl`, pin the calibrate date before starting a run:
-```julia
-calibrate_date = Date("<YYYY-MM-DD>", "yyyy-mm-dd")
+Before calibrating, compute the shared truth-data preliminaries once (this is
+extracted out of `calibrate_l63.jl`/`calibrate_l96.jl` to avoid every SLURM
+array task racing to compute and write the same file):
+```bash
+julia --project=. l63_preliminaries.jl
+EXPERIMENT=l96_const julia --project=. l96_preliminaries.jl
 ```
+
+`calibrate_date` in `experiment_config.jl` is set via the `CALIBRATE_DATE` env
+var (falls back to `today()` for local runs); `hpc-variant/submit_*.sh` fixes
+it once per submission so every stage agrees on the same output directory.
 
 ## Pipeline
 
 ### L63
 ```
-calibrate_array  ─(afterok)→  pushforward_from_posterior  ─(afterany)→  exp_to_leaderboard
+l63_preliminaries  ─(afterok)→  calibrate_array  ─(afterany)→  pushforward_from_posterior  ─(afterany)→  exp_to_leaderboard
 ```
 
 ### L96 (const / vec / flux)
 ```
-calibrate_array  ─(afterok)→  pushforward_from_posterior  ─(afterany)→  exp_to_leaderboard
+l96_preliminaries  ─(afterok)→  calibrate_array  ─(afterany)→  pushforward_from_posterior  ─(afterany)→  exp_to_leaderboard
 ```
 
 ## Standalone (serial / local)
 
 ```bash
 # L63
+julia --project=. l63_preliminaries.jl
 julia --project=. calibrate_l63.jl
 julia --project=. pushforward_from_posterior_l63.jl
 julia --project=. exp_to_leaderboard.jl
 
 # L96 — set EXPERIMENT env var
+EXPERIMENT=l96_const julia --project=. l96_preliminaries.jl
 EXPERIMENT=l96_const julia --project=. calibrate_l96.jl
 EXPERIMENT=l96_const julia --project=. pushforward_from_posterior_l96.jl
 EXPERIMENT=l96_const julia --project=. exp_to_leaderboard.jl
@@ -49,10 +58,24 @@ EXPERIMENT=l96_vec julia --project=. calibrate_l96.jl 5
 
 ## HPC (Caltech Resnick cluster, SLURM)
 
-Use the `slurm-pipeline-handler` skill to add sbatch and submit scripts.
+See `hpc-variant/README.md` for the full dependency graph, sbatch/submit
+script reference, and manual submission examples. Quick start:
 
-Array upper bound = `length(N_ens_sizes) * n_repeats`.
-Update in every array sbatch file when either changes in `experiment_config.jl`.
+```bash
+cd hpc-variant
+bash submit_precompile.sh                    # once, or after any package update
+bash submit_l63.sh
+bash submit_l96_const.sh
+bash submit_l96_vec.sh
+bash submit_l96_flux.sh
+```
+
+Array upper bound = `length(N_ens_sizes) * n_repeats` = 9 x 20 = 180 (all four
+cases). Update `--array` in `hpc-variant/calibrate_array.sbatch` and
+`hpc-variant/pushforward_from_posterior.sbatch` if either changes in
+`experiment_config.jl` (keep both the top-level and `hpc-variant/` copies of
+`experiment_config.jl` in sync manually — they are intentionally separate
+files, mirroring `calibrate_emulate_sample`).
 
 ## Leaderboard metric
 

@@ -35,36 +35,17 @@ function calibrate_one(cfg, N_ens, rng_idx, output_dir)
 
     # ── Problem setup (shared across all cells of this case) ───────────
     nx = 3  # state dimension
-    ny = 9  # observation dimension
     truth_params = EnsembleMemberConfig([28.0, 8.0 / 3.0])
-    t = 0.01
-    T = 40.0
 
     prelim_file = joinpath(@__DIR__, "output", prelim_filename(cfg))
-    if isfile(prelim_file)
-        prelim = load_preliminaries(prelim_file)
-        x0                     = prelim.x0
-        y                      = prelim.y
-        lorenz_config_settings = prelim.lorenz_config_settings
-        observation_config     = prelim.observation_config
-        R                      = prelim.R
-        ic_cov_sqrt            = prelim.ic_cov_sqrt
-    else
-        rng_i = MersenneTwister(11)
-        pdc = compute_perfect_data(
-            truth_params, nx, ny,
-            LorenzConfig(t, 1000.0), rand(rng_i, Normal(0.0, 1.0), nx),
-            LorenzConfig(t, T), ObservationConfig(30.0, T),
-        )
-        x0                     = pdc.x0
-        y                      = pdc.y
-        lorenz_config_settings = pdc.lorenz_config_settings
-        observation_config     = pdc.observation_config
-        R                      = pdc.R
-        ic_cov_sqrt            = pdc.ic_cov_sqrt
-        save_preliminaries(pdc, prelim_file)
-        @info "Saved computed quantities to $(prelim_file)"
-    end
+    isfile(prelim_file) || error("Prelim file not found: $(prelim_file)\nRun l63_preliminaries.jl first.")
+    prelim = load_preliminaries(prelim_file)
+    x0                     = prelim.x0
+    y                      = prelim.y
+    lorenz_config_settings = prelim.lorenz_config_settings
+    observation_config     = prelim.observation_config
+    R                      = prelim.R
+    ic_cov_sqrt            = prelim.ic_cov_sqrt
 
     # ── Prior ────────────────────────────────────────────────────────
     prior_r = constrained_gaussian("rho", exp(3.3), 4.153, 0, Inf)
