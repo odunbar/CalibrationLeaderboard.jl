@@ -58,8 +58,14 @@ EXPERIMENT=l96_vec julia --project=. calibrate_l96.jl 5
 
 ## HPC (Caltech Resnick cluster, SLURM)
 
-See `hpc-variant/README.md` for the full dependency graph, sbatch/submit
-script reference, and manual submission examples. Quick start:
+`hpc-variant/` holds only sbatch and submit scripts — there is a single copy
+of every `.jl` script and of `experiment_config.jl` (this one, in the
+directory you're reading now), shared verbatim between local and HPC runs.
+Each sbatch job `cd`s into `hpc-variant/` and invokes `julia --project=..
+"../${SCRIPT}"`, so the script's own `@__DIR__` still resolves here — same
+config, same `common/` paths, same `output/` tree as a local run. See
+`hpc-variant/README.md` for the full dependency graph, sbatch/submit script
+reference, and manual submission examples. Quick start:
 
 ```bash
 cd hpc-variant
@@ -71,11 +77,10 @@ bash submit_l96_flux.sh
 ```
 
 Array upper bound = `length(N_ens_sizes) * n_repeats` = 9 x 20 = 180 (all four
-cases). Update `--array` in `hpc-variant/calibrate_array.sbatch` and
-`hpc-variant/pushforward_from_posterior.sbatch` if either changes in
-`experiment_config.jl` (keep both the top-level and `hpc-variant/` copies of
-`experiment_config.jl` in sync manually — they are intentionally separate
-files, mirroring `calibrate_emulate_sample`).
+cases). If either changes in `experiment_config.jl`, update `--array` in
+`hpc-variant/calibrate_array.sbatch` and
+`hpc-variant/pushforward_from_posterior.sbatch` — there's only the one config
+file to edit.
 
 ## Leaderboard metric
 
