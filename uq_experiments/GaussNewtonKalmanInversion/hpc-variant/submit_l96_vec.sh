@@ -57,3 +57,7 @@ LB_JID=$(sbatch --parsable \
 echo "  exp_to_leaderboard job ID: ${LB_JID}"
 
 echo "=== Done. Monitor with: squeue -u \$USER ==="
+
+# sbatch --parsable -A esm --job-name="pushfwd_l96v" --export=ALL,EXPERIMENT=l96_vec,CALIBRATE_DATE=<yyyy-mm-dd> pushforward_from_posterior.sbatch
+
+# sbatch -A esm --job-name="leaderboard_l96v" --export=ALL,EXPERIMENT=l96_vec,CALIBRATE_DATE=<yyyy-mm-dd> exp_to_leaderboard.sbatch
