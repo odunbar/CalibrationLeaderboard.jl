@@ -4,11 +4,16 @@ Uses the `GaussNewtonInversion` (GNKI) process from `EnsembleKalmanProcesses.jl`
 — an iterated ensemble Kalman filter with statistical linearization that
 converges (in pseudotime) towards the exact Bayesian posterior. Unlike
 `uq_experiments/calibrate_emulate_sample`, there is **no emulate_sample
-stage**: the raw ensemble at each GNKI iteration is itself treated as the set
-of UQ samples and is pushed forward directly. This keeps the pipeline to three
-stages (calibrate → pushforward → leaderboard) and makes the sample count at
-iteration `k` equal to `N_ens` (no artificial upsampling via a fitted
-emulator/MCMC chain).
+stage**: the raw ensemble at each GNKI iteration is itself treated as the
+posterior estimate, keeping the pipeline to three stages (calibrate →
+pushforward → leaderboard). `post_mean`/`post_cov` come directly from this
+raw `N_ens`-member ensemble. For the output-space coverage metric, though,
+`N_ens` alone (as low as 4 for L63) makes quantile estimates noisy, so
+`pushforward_from_posterior_l*.jl` instead fits a Gaussian to the ensemble
+(in unconstrained space) and resamples a fixed, larger number of points from
+it (`n_pushforward_samples = 1000`, matching `calibrate_emulate_sample`)
+before pushing forward — no fitted emulator or MCMC chain involved, just a
+moment-matched Gaussian resample of the ensemble itself.
 
 ## One-time setup
 
@@ -85,16 +90,16 @@ file to edit.
 ## Leaderboard metric
 
 For each `(N_ens, rng_idx, k)` cell:
-- `post_mean`, `post_cov` — mean and covariance of the raw ensemble in
-  parameter (constrained) space, no emulator/MCMC involved.
-- `output_coverage` — marginal coverage fraction in output space, computed
-  directly from the `N_ens` ensemble-pushforward samples at iteration `k`
-  (no upsampling).
+- `post_mean`, `post_cov` — mean and covariance of the raw `N_ens` ensemble in
+  parameter (constrained) space.
+- `output_coverage` — R-whitened PCA coverage in output space (see
+  `exp_to_leaderboard.jl` header), computed from `n_pushforward_samples = 1000`
+  points resampled from the Gaussian implied by the ensemble's own mean/cov
+  (fit in unconstrained space), not from the raw `N_ens` ensemble directly.
+  This reduces quantile-estimation noise relative to using `N_ens` samples,
+  but does not reduce the underlying estimation error of the ensemble
+  mean/cov itself, and assumes the ensemble is well approximated by a
+  Gaussian.
 - `output_budget_to_target` / `output_iters_to_target` — smallest
   `N_ens × k` (forward-model evaluations) to reach calibrated coverage, per
   quantile and per tolerance scaling `c`.
-
-Because the sample count equals `N_ens` (as low as 4 for L63), coverage
-estimates are noisier at small ensemble sizes than the emulator/MCMC-based
-methods in `calibrate_emulate_sample` — this is an inherent property of
-using the raw ensemble as the posterior surrogate, not a bug.
