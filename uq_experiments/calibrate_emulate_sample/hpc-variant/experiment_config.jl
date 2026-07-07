@@ -86,7 +86,7 @@ function experiment_config(case::Symbol)
         return (
             model          = "l96",
             force_case     = "vec-force",
-            N_ens_sizes    = collect(40:ens_step_vec:40+n_ens_step*ens_step_vec),
+            N_ens_sizes    = collect(50:ens_step_vec:50+n_ens_step*ens_step_vec),
             N_iter         = 20,
             terminate_at   = 2.0,
             n_repeats      = n_repeats,
@@ -101,7 +101,7 @@ function experiment_config(case::Symbol)
         return (
             model          = "l96",
             force_case     = "flux-force",
-            N_ens_sizes    = collect(30:ens_step_flux:30+n_ens_step*ens_step_flux),
+            N_ens_sizes    = collect(50:ens_step_flux:50+n_ens_step*ens_step_flux),
             N_iter         = 20,
             terminate_at   = 2.0,
             n_repeats      = n_repeats,

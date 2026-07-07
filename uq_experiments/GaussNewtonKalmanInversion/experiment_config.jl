@@ -6,7 +6,7 @@ using Dates
 # Set EXPERIMENT to one of: :l63, :l96_const, :l96_vec, :l96_flux
 # (Overridden at runtime by EXPERIMENT env var or ARGS[2])
 experiments = [:l63, :l96_const, :l96_vec, :l96_flux]
-EXPERIMENT = experiments[1]
+EXPERIMENT = experiments[2]
 
 # Date identifying this calibration run — set once per pipeline submission via
 # the CALIBRATE_DATE env var (see hpc-variant/submit_*.sh); falls back to
@@ -30,8 +30,13 @@ method_key = "gnki"   # leaderboard netcdf filename prefix
 #    N_iter:       maximum number of EKI iterations allowed (hard cap).
 #    max_iter:     number of iterations (k = 1, ..., max_iter) whose ensembles
 #                  are pushed forward and scored on the leaderboard.
-#    N_ens_sizes:  sweep of ensemble sizes — this IS the posterior sample size
-#                  at each iteration (no separate emulator/MCMC upsampling).
+#    N_ens_sizes:  sweep of ensemble sizes. There is no separate emulate_sample
+#                  stage — the ensemble at each iteration IS the posterior
+#                  estimate — but pushforward_from_posterior_l*.jl resamples a
+#                  fixed, larger number of points from the Gaussian implied by
+#                  the ensemble's mean/cov to reduce quantile-estimation noise
+#                  in the coverage metric (post_mean/post_cov still come
+#                  directly from the raw N_ens ensemble).
 function experiment_config(case::Symbol)
     n_repeats = 20
 
@@ -61,7 +66,7 @@ function experiment_config(case::Symbol)
         return (
             model          = "l96",
             force_case     = "vec-force",
-            N_ens_sizes    = collect(40:5:40+8*5),
+            N_ens_sizes    = collect(50:5:50+8*5),
             N_iter         = 20,
             terminate_at   = 2.0,
             n_repeats      = n_repeats,
@@ -72,7 +77,7 @@ function experiment_config(case::Symbol)
         return (
             model          = "l96",
             force_case     = "flux-force",
-            N_ens_sizes    = collect(30:5:30+8*5),
+            N_ens_sizes    = collect(50:5:50+8*5),
             N_iter         = 20,
             terminate_at   = 2.0,
             n_repeats      = n_repeats,
