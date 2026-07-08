@@ -122,6 +122,8 @@ function calibrate_one(cfg, setup, N_ens, rng_idx, output_dir)
                 scheduler = DataMisfitController(terminate_at = setup.terminate_at),
             )
         else
+            scheduler = isa(method, Inversion) && eki_scheduler_case == :const ?
+                DefaultScheduler(0.1) : DataMisfitController(terminate_at = setup.terminate_at)
             ekpobj = EKP.EnsembleKalmanProcess(
                 initial_params,
                 setup.y,
@@ -130,7 +132,7 @@ function calibrate_one(cfg, setup, N_ens, rng_idx, output_dir)
                 rng = copy(rng),
                 verbose = verbose_flag,
                 localization_method = NoLocalization(),
-                scheduler = DataMisfitController(terminate_at = setup.terminate_at),
+                scheduler = scheduler,
             )
         end
         Ne = get_N_ens(ekpobj)

@@ -14,6 +14,16 @@ EXPERIMENT = experiments[4]
 # runs fall back to today().
 calibrate_date = haskey(ENV, "CALIBRATE_DATE") ? Date(ENV["CALIBRATE_DATE"]) : today()
 
+# EKI ("Inversion") scheduler variant:
+#   :dmc   → adaptive DataMisfitController(terminate_at = cfg.terminate_at)
+#   :const → fixed-step DefaultScheduler(0.1)
+# Only affects the "Inversion" method (EKI) — other methods keep DataMisfitController.
+# Also selects the "ces-eki-dmc" vs "ces-eki-const" leaderboard file-naming key
+# below. Override via the EKI_SCHEDULER env var for SLURM runs.
+eki_scheduler_variants = [:dmc, :const]
+EKI_SCHEDULER = eki_scheduler_variants[1]
+eki_scheduler_case = haskey(ENV, "EKI_SCHEDULER") ? Symbol(ENV["EKI_SCHEDULER"]) : EKI_SCHEDULER
+
 ########################################################################
 ###############  SHARED CONSTANTS  ####################################
 ########################################################################
@@ -27,7 +37,7 @@ method_names = [
 ]
 
 method_cases_key = Dict(
-    "Inversion"            => "ces-eki-dmc",
+    "Inversion"            => "ces-eki-$(eki_scheduler_case)",
     "TransformInversion"   => "ces-etki-dmc",
     "Unscented"            => "ces-uki-dmc",
     "GaussNewtonInversion" => "ces-iekf",
