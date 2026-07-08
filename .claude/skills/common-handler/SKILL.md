@@ -191,8 +191,10 @@ a silent rename breaks them.
 
 `save_preliminaries` already handles atomic writes internally (tmp file → `mv`),
 so callers must not add their own tmp-file logic around it. Just call
-`save_preliminaries(pdc, filepath)` directly, and wrap the call in a `try/catch`
-only when SLURM array tasks may race:
+`save_preliminaries(pdc, filepath)` directly. The current preliminaries-file
+pattern (see below) runs this from a single serial job, so no race guard is
+needed there — but if a new helper you're adding could still be called from
+multiple racing tasks, wrap the call in a `try/catch`:
 
 ```julia
 try
@@ -258,102 +260,58 @@ As of 2026-06-22, `forward_maps/` contains `Lorenz63.jl` and `Lorenz96.jl`
 (each with `PerfectDataConfig`, `compute_perfect_data`, `save_preliminaries`,
 and `load_preliminaries`); `opt_metrics/` and `uq_metrics/` are still empty.
 
-Also note: `uq_experiments/calibrate_emulate_sample/experiment_config.jl` and
-its `hpc-variant/experiment_config.jl` are intentionally kept as two separate
-files — do not propose merging them.
+Every UQ method now keeps exactly one `experiment_config.jl`, living in the
+method directory — `hpc-variant/` never has its own copy (see
+`slurm-pipeline-handler`'s "hpc-variant layout" for why). If you find a second
+copy, that's drift to fix, not an intentional split.
 
 ---
 
 ## Using `compute_perfect_data` and `save_preliminaries` from experiment scripts
 
-When updating a calibrate script to use `PerfectDataConfig` instead of its own
-manual spin-up/R-estimation/IC-cov computation, follow this pattern:
+`compute_perfect_data` (spin-up + synthetic observations + noise/IC
+covariances) is the expensive part of problem setup, so it belongs in its own
+`l63_preliminaries.jl` / `l96_preliminaries.jl` script — never inline inside a
+calibrate script that SLURM will run as an array of many tasks. That
+orchestration (why, and the full three-part SLURM wiring) is
+`slurm-pipeline-handler`'s "Serial pre-stage job (preliminaries pattern)" —
+read it there if you're wiring a new method's calibrate stage to `common/`.
+What matters here is the API contract these two functions form:
 
-### Flat scripts (non-hpc calibrate_l*.jl)
-
-Replace the manual block with a single `compute_perfect_data(...)` call, then
-unpack the fields you need, then save:
+**The preliminaries script** computes and saves unconditionally — it's a
+single serial job, so there's no existence check and no race to guard against:
 
 ```julia
-ny = 9   # or 2*nx for L96
-t = 0.01
-T_start = 30.0   # problem-specific
-T_end = T
 pdc = compute_perfect_data(
     truth_params, nx, ny,                              # L63 signature
     LorenzConfig(t, 1000.0), rand(rng_i, Normal(0, 1), nx),
     LorenzConfig(t, T), ObservationConfig(T_start, T_end),
 )
 # For L96, omit ny and pass R_inflation=inff as a keyword argument.
-x0                     = pdc.x0
-y                      = pdc.y
-lorenz_config_settings = pdc.lorenz_config_settings
-observation_config     = pdc.observation_config
-R                      = pdc.R
-R_inv_var              = pdc.R_inv_var
-ic_cov_sqrt            = pdc.ic_cov_sqrt
+save_preliminaries(pdc, prelim_file)
+```
 
-prelim_file = joinpath(output_dir, "l63_computed_preliminaries.jld2")
-if !isfile(prelim_file)
-    save_preliminaries(pdc, prelim_file)
-    @info "Saved computed quantities to $(prelim_file)"
-end
+**The calibrate script** (and any other consumer — pushforward, diagnostics)
+loads and errors if the file is missing, rather than computing it itself:
+
+```julia
+isfile(prelim_file) || error("Prelim file not found: $(prelim_file)\nRun l63_preliminaries.jl first.")
+prelim = load_preliminaries(prelim_file)
+x0, y, R, R_inv_var, ic_cov_sqrt = prelim.x0, prelim.y, prelim.R, prelim.R_inv_var, prelim.ic_cov_sqrt
+lorenz_config_settings, observation_config = prelim.lorenz_config_settings, prelim.observation_config
 ```
 
 Do not duplicate `R_sqrt = sqrt(R)` — it is not saved to or loaded from the
 prelim file, and downstream code does not use it.
 
-### if/else load-or-compute patterns (e.g. non-hpc calibrate_l96.jl)
-
-Call `save_preliminaries` inside the `else` branch only — `pdc` does not exist
-in the `if` (load) branch and should not be returned from it:
-
-```julia
-if isfile(prelim_file)
-    loaded_data = JLD2.load(prelim_file)
-    x0 = loaded_data["x0"]
-    # ... unpack the rest ...
-else
-    pdc = compute_perfect_data(phi, nx, ...; R_inflation = inff)
-    x0 = pdc.x0; y = pdc.y; ...
-    save_preliminaries(pdc, prelim_file)
-    @info "Saved computed quantities to $(prelim_file)"
-end
-```
-
-### Functions that return NamedTuples (hpc-variant build_setup)
-
-When `compute_perfect_data` is called inside a function that returns a
-NamedTuple, include `pdc` in the tuple. The caller needs it to call
-`save_preliminaries` — it cannot reconstruct `pdc` from the unpacked fields:
-
-```julia
-function build_setup(cfg)
-    ...
-    pdc = compute_perfect_data(...)
-    x0 = pdc.x0; y = pdc.y; ...
-    return (; nx, nu, ny, x0, y, R, R_inv_var, ic_cov_sqrt,
-              lorenz_config_settings, observation_config, ..., pdc)
-end
-
-function main()
-    setup = build_setup(cfg)
-    ...
-    if !isfile(prelim_file)
-        try
-            save_preliminaries(setup.pdc, prelim_file)
-            @info "Saved computed quantities to $(prelim_file)"
-        catch
-            @info "Prelim file already written by another task; discarding duplicate"
-        end
-    end
-end
-```
-
-For hpc-variant l96, where `build_setup` has an if/else load-or-compute block,
-call `save_preliminaries(pdc, prelim_file)` with the `try/catch` inside the
-`else` branch — do not return `pdc` from `build_setup` in that case, since
-`pdc` doesn't exist in the load branch.
+Per-task setup that a calibrate script still needs — priors, forcing
+parameters, a trained NN's architecture — stays in the calibrate script (and
+is legitimately duplicated in the preliminaries script too, e.g. L96's
+`force_case_setup`/NN training appears in both `l96_preliminaries.jl` and
+`calibrate_l96.jl`). This does **not** belong in `common/`: it's cheap,
+deterministic (same seed both places), and specific to one method's parameter
+space — the thing worth sharing and caching is only the expensive spin-up
+simulation inside `compute_perfect_data`.
 
 ---
 

@@ -283,7 +283,20 @@ The UQ skeleton has four stage scripts, all with `main()` + dispatch:
 | `pushforward_from_posterior_<MODEL>.jl` | Push posterior through forward map | ✓ per cell |
 | `exp_to_leaderboard.jl` | Coverage metrics → netcdf | single (all cells) |
 
-After scaffolding, run `slurm-pipeline-handler` to add the HPC variant.
+**Required fifth stage — preliminaries.** `calibrate_<MODEL>.jl`'s problem
+setup includes an expensive shared computation (a Lorenz spin-up +
+synthetic-observation generation via `compute_perfect_data`). Never compute it
+inline in the calibrate script — every array task would recompute it, and a
+naive `isfile`-guarded save races when many tasks start at once. Always split
+it into its own `l63_preliminaries.jl` / `l96_preliminaries.jl` that computes
+and saves unconditionally (single serial job, no race), and have
+`calibrate_<MODEL>.jl` load-or-error instead of compute-or-load. Scaffold this
+for every new UQ method — two worked examples to follow:
+`uq_experiments/GaussNewtonKalmanInversion/` and
+`uq_experiments/calibrate_emulate_sample/`.
+
+After scaffolding, run `slurm-pipeline-handler` to add the HPC variant (it
+covers the preliminaries stage's SLURM wiring too).
 
 ## Step 6 — README.md
 
@@ -324,6 +337,9 @@ were written.
 
 After creating the skeleton:
 - [ ] `ls <opt|uq>_experiments/<method_name>/` shows expected files
+- [ ] UQ only: `l63_preliminaries.jl` / `l96_preliminaries.jl` exist and
+      `calibrate_<MODEL>.jl` loads from them (`isfile(prelim_file) || error(...)`)
+      rather than computing truth data inline
 - [ ] `grep -r 'include.*Lorenz' <opt|uq>_experiments/<method_name>/`
       shows only `@__DIR__`-relative common/ paths (no bare includes)
 - [ ] `ls common/opt_metrics/write_results_nc.jl` exists (OPT only —

@@ -18,13 +18,14 @@ description: >-
 
 # SLURM Pipeline Handler
 
-`uq_experiments/GaussNewtonKalmanInversion/` and `opt_experiments/levenberg_marquardt/`
-are the canonical examples: one copy of every `.jl` script and of
-`experiment_config.jl`, living in the method directory; `hpc-variant/` holds
-only sbatch + submit scripts (see "hpc-variant layout" below for why and how).
-`uq_experiments/calibrate_emulate_sample/` established the original UQ stage
-names and array-sbatch conventions and is worth reading for shape, but its
-`hpc-variant/` duplicates every script — a legacy pattern, not one to copy.
+`uq_experiments/GaussNewtonKalmanInversion/`, `uq_experiments/calibrate_emulate_sample/`,
+and `opt_experiments/levenberg_marquardt/` are the canonical examples: one copy
+of every `.jl` script and of `experiment_config.jl`, living in the method
+directory; `hpc-variant/` holds only sbatch + submit scripts (see "hpc-variant
+layout" below for why and how). `calibrate_emulate_sample` is the fuller UQ
+example — it has the extra `emulate_sample` / `diagnostic_plots` stages that
+`GaussNewtonKalmanInversion` skips (see `references/pipeline-uq.md`); read
+either for the current shape, they follow the same conventions.
 
 Read `references/pipeline-uq.md` for the full UQ pipeline spec.
 Read `references/pipeline-opt.md` for the full OPT pipeline spec.
@@ -87,7 +88,7 @@ Document the per-case formula in the submit script comment so it stays in sync.
 | CPU target | `JULIA_CPU_TARGET="cascadelake"` | `precompile.sbatch` only |
 | Thread count | `${SLURM_CPUS_PER_TASK}` | `JULIA_NUM_THREADS` + `OPENBLAS_NUM_THREADS` |
 | No auto-precompile | `JULIA_PKG_PRECOMPILE_AUTO=0` | All non-precompile sbatch files |
-| Log dir | `../output/slurm/` | All `--output`/`--error` (legacy exception: `calibrate_emulate_sample` uses `output/slurm/` with no `../`, since its `hpc-variant/` keeps a separate output tree — don't copy that) |
+| Log dir | `../output/slurm/` | All `--output`/`--error` |
 
 ## Pin the run date via RUN_DATE / CALIBRATE_DATE
 
@@ -116,9 +117,7 @@ run_date = haskey(ENV, "RUN_DATE") ? Date(ENV["RUN_DATE"]) : today()
 ```
 Treat this as standard practice for any new pipeline, UQ or OPT — not an
 aspirational nice-to-have. Worked examples: `opt_experiments/levenberg_marquardt/`,
-`uq_experiments/GaussNewtonKalmanInversion/`. `calibrate_emulate_sample` still
-hand-pins `calibrate_date`; that's a known gap in the older pipeline, not a
-pattern to copy.
+`uq_experiments/GaussNewtonKalmanInversion/`, `uq_experiments/calibrate_emulate_sample/`.
 
 ## Precompile job — always separate
 
@@ -158,8 +157,10 @@ end
 This looks safe (`isfile` + `try/catch`) but isn't: it wastes the computation
 N times (e.g. retraining a small neural net 180 times instead of once), and
 the write can still race — the `try/catch` only stops the crash, not the torn
-write. `calibrate_emulate_sample/hpc-variant/calibrate_l63.jl` has exactly
-this shape. The real fix moves the *whole* computation, not just the save
+write. This exact shape was found and fixed in `calibrate_l63.jl` during
+`calibrate_emulate_sample`'s migration to the preliminaries pattern — grep any
+new run script for an unconditional compute before an `isfile`-gated save,
+that's the tell. The real fix moves the *whole* computation, not just the save
 call, into the prelim script.
 
 ### The three-part change
@@ -179,8 +180,10 @@ call, into the prelim script.
 Chain: `preliminaries →(afterok)→ run_array →(afterany)→ leaderboard` —
 `afterok` + `--kill-on-invalid-dep=yes` so a failed prelim stops wasted work;
 `afterany` on the leaderboard so it processes whatever ran, even if some array
-tasks failed. See `references/pipeline-uq.md` / `pipeline-opt.md` for full
-worked `sbatch --export=ALL,...` chains.
+tasks failed. Worked examples: `uq_experiments/GaussNewtonKalmanInversion/`
+(the original) and `uq_experiments/calibrate_emulate_sample/` (retrofitted
+from the partial-fix anti-pattern above). See `references/pipeline-uq.md` /
+`pipeline-opt.md` for full worked `sbatch --export=ALL,...` chains.
 
 ## Creating a pipeline for a new experiment
 
@@ -194,8 +197,10 @@ worked `sbatch --export=ALL,...` chains.
    posterior sample set.
 2. Per-cell stages: use `array.sbatch` template. Serial stages: use `single_job.sbatch`.
 3. Follow the "hpc-variant layout" convention below. Use
-   `uq_experiments/GaussNewtonKalmanInversion/` as the template — not
-   `calibrate_emulate_sample`, whose `hpc-variant/` duplicates every script.
+   `uq_experiments/GaussNewtonKalmanInversion/` (3-stage) or
+   `uq_experiments/calibrate_emulate_sample/` (5-stage, with emulate_sample and
+   diagnostic_plots) as the template, depending on which stage set the new
+   method needs.
 4. If run scripts share expensive setup, apply the **serial pre-stage
    pattern** above — check for the write-only-gated partial fix too.
 5. Create `submit_l63.sh`, `submit_l96_const.sh`, `submit_l96_vec.sh`, `submit_l96_flux.sh`
@@ -233,12 +238,12 @@ no `.jl` files, no `Project.toml`. Everything else lives exactly once, in
 ```
 <method>/
 ├── experiment_config.jl
-├── l63_preliminaries.jl / l96_preliminaries.jl   ← optional, see preliminaries pattern
+├── l63_preliminaries.jl / l96_preliminaries.jl   ← see preliminaries pattern
 ├── calibrate_l63.jl / run_l63_<method>.jl
 ├── calibrate_l96.jl / run_l96_<method>.jl
 ├── exp_to_leaderboard.jl / run_to_leaderboard.jl
 └── hpc-variant/
-    ├── preliminaries.sbatch                       ← optional
+    ├── preliminaries.sbatch
     ├── calibrate_array.sbatch / run_array.sbatch
     ├── exp_to_leaderboard.sbatch / leaderboard.sbatch
     ├── precompile.sbatch
@@ -260,15 +265,17 @@ julia --project=.. "../${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
   from inside `hpc-variant/` before trusting it.
 
 Log paths use `../output/slurm/`; submit scripts do `mkdir -p ../output/slurm`.
-Worked examples: `levenberg_marquardt/`, `adam/`, `GaussNewtonKalmanInversion/`.
+Worked examples: `levenberg_marquardt/`, `adam/`, `GaussNewtonKalmanInversion/`,
+`calibrate_emulate_sample/`.
 
-**Why not copy scripts into `hpc-variant/` instead**, as `calibrate_emulate_sample`
-does? It isn't broken — Julia's `include()` resolves relative to the
-including file's own directory, so a copied script genuinely does load a
-config copied alongside it. The problem is drift: bump `N_ens_sizes` in one
-copy and forget the other, and array tasks silently run stale settings.
-Referencing the original via `../${SCRIPT}` removes the second copy, so
-there's nothing left to drift.
+**Why not copy scripts into `hpc-variant/` instead?** It isn't broken — Julia's
+`include()` resolves relative to the including file's own directory, so a
+copied script genuinely does load a config copied alongside it. The problem is
+drift: bump `N_ens_sizes` in one copy and forget the other, and array tasks
+silently run stale settings. Referencing the original via `../${SCRIPT}`
+removes the second copy, so there's nothing left to drift. (`calibrate_emulate_sample`
+used to copy scripts into `hpc-variant/` this way — it has since been migrated
+to the one-copy layout.)
 
 ## Adjusting array size
 
