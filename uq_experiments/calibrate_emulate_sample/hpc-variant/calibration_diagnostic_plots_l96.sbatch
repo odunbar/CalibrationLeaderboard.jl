@@ -9,8 +9,8 @@
 #          --export=ALL,EXPERIMENT=l96_vec calibration_diagnostic_plots_l96.sbatch
 
 #SBATCH --job-name=calib_diag
-#SBATCH --output=output/slurm/calib_diag_%j.out
-#SBATCH --error=output/slurm/calib_diag_%j.err
+#SBATCH --output=../output/slurm/calib_diag_%j.out
+#SBATCH --error=../output/slurm/calib_diag_%j.err
 #SBATCH --time=00:30:00
 #SBATCH --mem=8G
 #SBATCH --cpus-per-task=1
@@ -28,4 +28,4 @@ cd "${SLURM_SUBMIT_DIR}"
 
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
-julia --project=. calibration_diagnostic_plots_l96.jl
+julia --project=.. ../calibration_diagnostic_plots_l96.jl

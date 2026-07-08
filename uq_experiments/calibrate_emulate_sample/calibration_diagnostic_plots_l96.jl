@@ -18,8 +18,9 @@ include("experiment_config.jl")
 include(joinpath(@__DIR__, "..", "..", "common", "forward_maps", "Lorenz96.jl"))  # provides Flux.destructure for flux-force truth_params extraction
 
 #### CHOOSE YOUR CASE:
-@assert EXPERIMENT in (:l96_const, :l96_vec, :l96_flux) "For plot_l96_forcing.jl, set EXPERIMENT to :l96_const, :l96_vec, or :l96_flux in experiment_config.jl"
-cfg        = experiment_config(EXPERIMENT)
+exp = l96_experiment()
+@assert exp in (:l96_const, :l96_vec, :l96_flux) "For plot_l96_forcing.jl, set EXPERIMENT to :l96_const, :l96_vec, or :l96_flux in experiment_config.jl"
+cfg        = experiment_config(exp)
 method     = method_cases[1]
 calib_dir  = calib_directory(method, cfg)
 force_cases = [cfg.force_case]
@@ -59,7 +60,7 @@ for ((force_case, N_ens, rng_idx), calib_filename_suffix) in zip(valid_file_item
 
     @info("Plotting for L96: \n method: $(calib_dir) \n experiment: $(calib_filename_suffix)")
 
-    data_save_directory  = joinpath(homedir, "output", calib_dir)
+    data_save_directory   = joinpath(homedir, "output", calib_dir)
     figure_save_directory = data_save_directory
 
     # --- load calibrate outputs ---

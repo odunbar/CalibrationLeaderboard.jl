@@ -1,5 +1,5 @@
 # Import modules
-using Distributions  # probability distributions and associated functions
+using Distributions
 using LinearAlgebra
 using Random
 using JLD2
@@ -7,6 +7,7 @@ using Statistics
 using Flux
 using BSON
 using Dates
+ENV["GKSwstype"] = "100"
 using Plots
 using Plots.Measures
 
@@ -16,89 +17,16 @@ using CalibrateEmulateSample.ParameterDistributions
 using CalibrateEmulateSample.DataContainers
 using CalibrateEmulateSample.EnsembleKalmanProcesses
 
-include(joinpath(@__DIR__, "..", "..", "common", "forward_maps", "Lorenz96.jl")) # Contains Lorenz 96 source code
+include(joinpath(@__DIR__, "..", "..", "common", "forward_maps", "Lorenz96.jl"))
 include("experiment_config.jl")
 
-verbose_flag = false
-save_all_ekp = true
-
-n_samples_pushforward = 400 # num. samples to pushforward through lorenz
-
-
 ########################################################################
-################## file-certainty for loading ##########################
+############### Per-cell pushforward ###################################
 ########################################################################
-
-@assert EXPERIMENT in (:l96_const, :l96_vec, :l96_flux) "For calibrate_l96.jl, set EXPERIMENT to :l96_const, :l96_vec, or :l96_flux in experiment_config.jl"
-cfg        = experiment_config(EXPERIMENT)
-method     = method_cases[1]  # method_cases defined in experiment_config.jl
-calib_dir  = calib_directory(method, cfg)
-force_case = cfg.force_case
-N_enss     = cfg.N_ens_sizes
-rng_idxs   = collect(1:cfg.n_repeats)
-
-# get some preliminaries
-prelim_dir = joinpath(@__DIR__, "output")
-if !isdir(prelim_dir)
-    mkdir(prelim_dir)
-end
-prelim_file = joinpath(prelim_dir, "l96_computed_preliminaries_$(force_case).jld2")
-if isfile(prelim_file)
-    loaded_data = JLD2.load(prelim_file)
-    x0 = loaded_data["x0"]
-    nx = length(x0)
-    y = loaded_data["y"]
-    ic_cov_sqrt = loaded_data["ic_cov_sqrt"]
-    R = loaded_data["R"]
-    R_inv_var = loaded_data["R_inv_var"]
-    lorenz_config_settings = loaded_data["lorenz_config_settings"]
-    observation_config = loaded_data["observation_config"]
-
-    @info "loaded precomputed preliminary quantities from $(prelim_file)"
-else
-    throw(ErrorException("preliminaries files not found. \n First run: \n > julia --project calibrate_l96.jl"))
-end
-### determine valid files before we try to load
-
-homedir = joinpath(pwd())
-data_save_directory = joinpath(homedir, "output", calib_dir)
-
-valid_file_items = []
-valid_files = []
-for N_ens in N_enss
-    for rng_idx in rng_idxs
-        data_file = joinpath(data_save_directory, posterior_filename(cfg, N_ens, rng_idx))
-        if isfile(data_file)
-            push!(valid_files, case_suffix(cfg, N_ens, rng_idx))
-            push!(valid_file_items, (N_ens, rng_idx))
-        end
-    end
-end
-
-@info "Pushing forward posteriors through the forward map from valid files:"
-display(valid_files)
-
-if isempty(valid_file_items)
-    error("No valid posterior files found in $(data_save_directory). Run emulate_sample_l96.jl first.")
-end
-
-### Then load data
-
-# Load first valid file to determine parameter dimension and max k
-first_loaded = JLD2.load(joinpath(data_save_directory, posterior_filename(cfg, valid_file_items[1]...)))
-n_params = length(vec(mean(first_loaded["posteriors_by_k"][1])))
-
-n_k = maximum(
-    maximum(JLD2.load(joinpath(data_save_directory, posterior_filename(cfg, N_ens, rng_idx)))["k_values"])
-    for (N_ens, rng_idx) in valid_file_items
-)
-
-n_rng = length(rng_idxs)
-n_ens = length(N_enss)
 
 function pushforward_metrics(samples::AbstractMatrix, truth::AbstractVector)
     m = vec(mean(samples, dims=2))
-    C_raw = cov(samples')
+    C_raw = cov(samples, dims=2)
     num_samples = size(samples, 2)
     dim_samples = size(samples, 1)
     r = rank(C_raw)
@@ -115,25 +43,45 @@ function pushforward_metrics(samples::AbstractMatrix, truth::AbstractVector)
     return mah, lp
 end
 
-for (N_ens, rng_idx) in valid_file_items
-    calib_fn = results_filename(cfg, N_ens, rng_idx)
-    post_fn = posterior_filename(cfg, N_ens, rng_idx)
+function ensemble_from_posterior_one(cfg, N_ens, rng_idx; method = method_cases[1])
+    n_samples_pushforward = 1000
+
+    force_case  = cfg.force_case
+    calib_dir   = calib_directory(method, cfg)
+    calib_fn    = results_filename(cfg, N_ens, rng_idx)
+    post_fn     = posterior_filename(cfg, N_ens, rng_idx)
+
+    # load preliminaries
+    prelim_dir  = joinpath(@__DIR__, "output")
+    prelim_file = joinpath(prelim_dir, "l96_computed_preliminaries_$(force_case).jld2")
+    if !isfile(prelim_file)
+        throw(ErrorException("preliminaries files not found. \n First run: \n > julia --project calibrate_l96.jl"))
+    end
+    loaded_data = JLD2.load(prelim_file)
+    x0                    = loaded_data["x0"]
+    nx                    = length(x0)
+    y                     = loaded_data["y"]
+    ic_cov_sqrt           = loaded_data["ic_cov_sqrt"]
+    R                     = loaded_data["R"]
+    lorenz_config_settings = loaded_data["lorenz_config_settings"]
+    observation_config    = loaded_data["observation_config"]
+
+    homedir             = joinpath(pwd())
+    data_save_directory = joinpath(homedir, "output", calib_dir)
+
+    if !isfile(joinpath(data_save_directory, post_fn))
+        @warn "No posterior file found for $(case_suffix(cfg, N_ens, rng_idx)); skipping."
+        return
+    end
+
     @info "loading case $(post_fn)"
     loaded_p = JLD2.load(joinpath(data_save_directory, post_fn))
     loaded_c = JLD2.load(joinpath(data_save_directory, calib_fn))
-
-    if !haskey(loaded_p, "pushforward_output_samples")
-        error("Pushforward data not found in $(post_fn). Run pushforward_from_posterior_l96.jl first.")
-    end
 
     posteriors_by_k = loaded_p["posteriors_by_k"]
     priors          = loaded_p["priors"]
     k_values        = loaded_p["k_values"]
     truth_params    = loaded_p["truth_params"]
-
-    pf_output   = loaded_p["pushforward_output_samples"]   # (n_samples, n_output, n_k_pos)
-    pf_forcing  = loaded_p["pushforward_forcing_samples"]  # (n_samples, n_forcing, n_k_pos)
-    pf_k_values = loaded_p["pushforward_k_values"]
 
     (truth_params_obj, _) = loaded_c["truth_params_structure"]
 
@@ -142,13 +90,8 @@ for (N_ens, rng_idx) in valid_file_items
     elseif force_case == "vec-force"
         (truth_params_obj.val, nothing, nothing)
     elseif force_case == "flux-force"
-        truth_params_constrained, _ = destructure(truth_params_obj.model)
-
-        (
-            truth_params_constrained,
-            truth_params_obj.model,
-            truth_params_obj.sample_range
-        )
+        tp, _ = destructure(truth_params_obj.model)
+        (tp, truth_params_obj.model, truth_params_obj.sample_range)
     end
 
     is_const = force_case == "const-force"
@@ -160,8 +103,8 @@ for (N_ens, rng_idx) in valid_file_items
     # --- sample from prior for grey background ---
     prior_samples_unconstrained = sample(priors, n_samples_pushforward)
     prior_samples_constrained   = transform_unconstrained_to_constrained(priors, prior_samples_unconstrained)
-    prior_param_diffs   = reduce(hcat, [prior_samples_constrained[:, j] - truth_params_constrained for j in 1:n_samples_pushforward])
-    prior_forcings      = hcat([forcing(build_forcing(truth_params_obj, prior_samples_constrained[:, j], structure, sample_range), x0) for j in 1:n_samples_pushforward]...)
+    prior_param_diffs = reduce(hcat, [prior_samples_constrained[:, j] - truth_params_constrained for j in 1:n_samples_pushforward])
+    prior_forcings    = hcat([forcing(build_forcing(truth_params_obj, prior_samples_constrained[:, j], structure, sample_range), x0) for j in 1:n_samples_pushforward]...)
     G_prior = hcat(
         [
             lorenz_forward(
@@ -172,6 +115,13 @@ for (N_ens, rng_idx) in valid_file_items
             ) for j in 1:n_samples_pushforward
         ]...,
     )
+
+    if !haskey(loaded_p, "pushforward_output_samples")
+        error("Pushforward data not found in $(post_fn). Run pushforward_from_posterior.sbatch first.")
+    end
+    pf_output   = loaded_p["pushforward_output_samples"]   # (n_samples, n_output, n_k_pos)
+    pf_forcing  = loaded_p["pushforward_forcing_samples"]  # (n_samples, n_forcing, n_k_pos)
+    pf_k_values = loaded_p["pushforward_k_values"]
 
     for k in k_values
         post_dist = posteriors_by_k[k]
@@ -300,12 +250,12 @@ for (N_ens, rng_idx) in valid_file_items
             plot!(p3, xaxis_forcing, push_forcings[:, 2:end], label = "",                  color = :lightgreen, linewidth = 4, linealpha = 0.1)
         end
         plot!(p4, 1:ny, G_ens[:, 1],    label = "pushforward outputs", color = :lightgreen, linewidth = 4, linealpha = 0.1)
-        plot!(p4, 1:ny, G_ens[:, 2:end], color = :lightgreen, label = "",                   linewidth = 4, linealpha = 0.1)
+        plot!(p4, 1:ny, G_ens[:, 2:end], label = "",                    color = :lightgreen, linewidth = 4, linealpha = 0.1)
 
         l = @layout [a b c]
         plt = plot(p2, p3, p4, layout = l)
 
-        suffix = case_suffix(cfg, N_ens, rng_idx)
+        suffix    = case_suffix(cfg, N_ens, rng_idx)
         figure_fn = "pushforward_from_posterior_$(suffix)_k$(k)_full_ens.png"
         savefig(plt, joinpath(data_save_directory, figure_fn))
         savefig(plt, joinpath(data_save_directory, replace(figure_fn, ".png" => ".pdf")))
@@ -396,8 +346,34 @@ for (N_ens, rng_idx) in valid_file_items
         ribbons_fn  = "posterior_ribbons_$(suffix)_k$(k)"
         savefig(ribbons_plt, joinpath(data_save_directory, ribbons_fn * ".png"))
         savefig(ribbons_plt, joinpath(data_save_directory, ribbons_fn * ".pdf"))
-
     end
 end
 
+########################################################################
+############### Main dispatcher ########################################
+########################################################################
 
+function main()
+    exp = l96_experiment()
+    @assert(
+        exp in (:l96_const, :l96_vec, :l96_flux),
+        "EXPERIMENT must be :l96_const, :l96_vec, or :l96_flux (got $exp)",
+    )
+    cfg   = experiment_config(exp)
+    tasks = flat_tasks(cfg)
+    idx   = task_index_from_args()
+
+    if isnothing(idx)
+        for (N_ens, rng_idx) in tasks
+            ensemble_from_posterior_one(cfg, N_ens, rng_idx)
+        end
+    else
+        if idx < 1 || idx > length(tasks)
+            error("SLURM_ARRAY_TASK_ID $(idx) out of range 1:$(length(tasks))")
+        end
+        N_ens, rng_idx = tasks[idx]
+        ensemble_from_posterior_one(cfg, N_ens, rng_idx)
+    end
+end
+
+main()

@@ -9,9 +9,10 @@ EXPERIMENT = experiments[4]
 
 # Date identifying this calibration run — written by calibrate, read by
 # emulate_sample and exp_to_leaderboard (so all stages stay in sync).
-# PIN this to reproduce a specific run directory.
-#calibrate_date = Date("2026-06-03", "yyyy-mm-dd")
-calibrate_date = today()
+# submit_l*.sh pins this via the CALIBRATE_DATE env var so every stage in the
+# chain agrees, even if the pipeline runs across a midnight boundary; local
+# runs fall back to today().
+calibrate_date = haskey(ENV, "CALIBRATE_DATE") ? Date(ENV["CALIBRATE_DATE"]) : today()
 
 ########################################################################
 ###############  SHARED CONSTANTS  ####################################
@@ -47,8 +48,9 @@ forcing_cases_key = Dict(
 #    N_ens_sizes: Vector of experiments
 #    n_repeats: number of rng seeds
 
+
 function experiment_config(case::Symbol)
-    n_ens_step = 8
+    n_ens_step = 8 ## MUST CHANGE SBATCH ARRAY SIZE TO ((N_ENS_STEP + 1) * N_REPEATS)
     n_repeats = 20
     if case == :l63
         ens_step = 2
@@ -85,7 +87,7 @@ function experiment_config(case::Symbol)
         return (
             model          = "l96",
             force_case     = "vec-force",
-            N_ens_sizes    = collect(40:ens_step_vec:40+n_ens_step*ens_step_vec),
+            N_ens_sizes    = collect(50:ens_step_vec:50+n_ens_step*ens_step_vec),
             N_iter         = 20,
             terminate_at   = 2.0,
             n_repeats      = n_repeats,
@@ -100,7 +102,7 @@ function experiment_config(case::Symbol)
         return (
             model          = "l96",
             force_case     = "flux-force",
-            N_ens_sizes    = collect(30:ens_step_flux:30+n_ens_step*ens_step_flux),
+            N_ens_sizes    = collect(50:ens_step_flux:50+n_ens_step*ens_step_flux),
             N_iter         = 20,
             terminate_at   = 2.0,
             n_repeats      = n_repeats,
@@ -136,6 +138,17 @@ function prior_filename(cfg)
     end
 end
 
+# Written once by l63_preliminaries.jl / l96_preliminaries.jl (before the
+# calibrate array starts) and loaded by calibrate_l63.jl / calibrate_l96.jl
+# and every downstream stage.
+function prelim_filename(cfg)
+    if cfg.force_case === nothing
+        return "$(cfg.model)_computed_preliminaries.jld2"
+    else
+        return "$(cfg.model)_computed_preliminaries_$(cfg.force_case).jld2"
+    end
+end
+
 ekp_filename(cfg, N_ens, rng_idx)      = "$(cfg.model)_ekp_$(case_suffix(cfg, N_ens, rng_idx)).jld2"
 results_filename(cfg, N_ens, rng_idx)  = "$(cfg.model)_calibrate_results_$(case_suffix(cfg, N_ens, rng_idx)).jld2"
 posterior_filename(cfg, N_ens, rng_idx) = "$(cfg.model)_posterior_$(case_suffix(cfg, N_ens, rng_idx)).jld2"
@@ -157,3 +170,33 @@ function nc_filename(cfg, method)
     end
 end
 
+########################################################################
+###############  ARRAY-JOB HELPERS  ###################################
+########################################################################
+
+# Flattened (N_ens, rng_idx) task list; index t (1-based) == SLURM_ARRAY_TASK_ID.
+# Outer loop = N_ens_sizes, inner = repeats, matching the original serial nesting.
+flat_tasks(cfg) =
+    [(N_ens, rng_idx) for N_ens in cfg.N_ens_sizes for rng_idx in 1:cfg.n_repeats]
+
+# Task index: prefer SLURM_ARRAY_TASK_ID, then first CLI arg, else nothing (run all).
+function task_index_from_args()
+    if haskey(ENV, "SLURM_ARRAY_TASK_ID")
+        return parse(Int, ENV["SLURM_ARRAY_TASK_ID"])
+    elseif !isempty(ARGS) && !isempty(ARGS[1])
+        return parse(Int, ARGS[1])
+    else
+        return nothing
+    end
+end
+
+# L96 experiment: prefer EXPERIMENT env var, then ARGS[2], else the manual toggle above.
+function l96_experiment()
+    if haskey(ENV, "EXPERIMENT")
+        return Symbol(ENV["EXPERIMENT"])
+    elseif length(ARGS) >= 2 && !isempty(ARGS[2])
+        return Symbol(ARGS[2])
+    else
+        return EXPERIMENT
+    end
+end

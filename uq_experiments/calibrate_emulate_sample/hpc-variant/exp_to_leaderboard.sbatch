@@ -9,8 +9,8 @@
 #   L63: sbatch --dependency=afterok:<emu_jobid> exp_to_leaderboard.sbatch
 
 #SBATCH --job-name=leaderboard
-#SBATCH --output=output/slurm/leaderboard_%j.out
-#SBATCH --error=output/slurm/leaderboard_%j.err
+#SBATCH --output=../output/slurm/leaderboard_%j.out
+#SBATCH --error=../output/slurm/leaderboard_%j.err
 #SBATCH --time=00:30:00
 #SBATCH --mem=8G
 #SBATCH --cpus-per-task=4
@@ -28,4 +28,4 @@ cd "${SLURM_SUBMIT_DIR}"
 
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
-julia --project=. exp_to_leaderboard.jl
+julia --project=.. ../exp_to_leaderboard.jl

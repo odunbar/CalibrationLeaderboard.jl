@@ -1,6 +1,7 @@
 #!/bin/bash
 # SLURM array job for the emulate-sample stage.
-# array=1-60%20 means run array 1-60, with max of 20 at a time.
+# array=1-180%100 means run array 1-180, with max of 100 at a time
+# (180 tasks = 9 N_ens × 20 repeats).
 #
 # L63:
 #   sbatch --dependency=afterok:<calib_jobid> \
@@ -16,8 +17,8 @@
 #          --export=ALL,SCRIPT=emulate_sample_l63.jl emulate_sample_array.sbatch
 
 #SBATCH --job-name=emusample
-#SBATCH --output=output/slurm/emusample_%A_%a.out
-#SBATCH --error=output/slurm/emusample_%A_%a.err
+#SBATCH --output=../output/slurm/emusample_%A_%a.out
+#SBATCH --error=../output/slurm/emusample_%A_%a.err
 #SBATCH --array=1-180%100
 #SBATCH --time=12:00:00
 #SBATCH --mem=16G
@@ -38,4 +39,4 @@ cd "${SLURM_SUBMIT_DIR}"
 
 export JULIA_PKG_PRECOMPILE_AUTO=0 # already precompiled so should not get all jobs to re-precompile
 
-julia --project=. "${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
+julia --project=.. "../${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"

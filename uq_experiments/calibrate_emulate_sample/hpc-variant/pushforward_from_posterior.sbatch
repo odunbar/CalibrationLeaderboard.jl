@@ -13,8 +13,8 @@
 #          --export=ALL,EXPERIMENT=l96_flux push_forward_from_posterior.sbatch
 
 #SBATCH --job-name=pushfwd
-#SBATCH --output=output/slurm/pushfwd_%A_%a.out
-#SBATCH --error=output/slurm/pushfwd_%A_%a.err
+#SBATCH --output=../output/slurm/pushfwd_%A_%a.out
+#SBATCH --error=../output/slurm/pushfwd_%A_%a.err
 #SBATCH --array=1-180%100
 #SBATCH --time=00:30:00
 #SBATCH --mem=16G
@@ -34,7 +34,7 @@ cd "${SLURM_SUBMIT_DIR}"
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
 if [[ -z "${EXPERIMENT:-}" || "${EXPERIMENT}" == "l63" ]]; then
-    julia --project=. pushforward_from_posterior_l63.jl "${SLURM_ARRAY_TASK_ID}"
+    julia --project=.. ../pushforward_from_posterior_l63.jl "${SLURM_ARRAY_TASK_ID}"
 else
-    julia --project=. pushforward_from_posterior_l96.jl "${SLURM_ARRAY_TASK_ID}"
+    julia --project=.. ../pushforward_from_posterior_l96.jl "${SLURM_ARRAY_TASK_ID}"
 fi

@@ -13,7 +13,7 @@ LABEL="precompile${EXP_ID:+_${EXP_ID}}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 cd "$DIR"
-mkdir -p output/slurm
+mkdir -p ../output/slurm
 
 echo "=== Submitting precompile ==="
 PRECOMPILE_JID=$(sbatch --parsable \

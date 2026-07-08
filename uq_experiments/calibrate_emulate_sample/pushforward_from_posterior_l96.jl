@@ -69,7 +69,7 @@ function pushforward_one(cfg, N_ens, rng_idx; method = method_cases[1])
         push_con  = transform_unconstrained_to_constrained(post_dist, push_unc)
         @info "Pushforward k=$(k), N_ens=$(N_ens), rng_idx=$(rng_idx): $(n_pushforward_samples) Lorenz96 evals"
         for s in 1:n_pushforward_samples
-            emc                   = build_forcing(truth_phi, push_con[:, s], phi_structure, sample_range)
+            emc               = build_forcing(truth_phi, push_con[:, s], phi_structure, sample_range)
             forcing_arr[s, :, ki] = forcing(emc, x0)
             output_arr[s, :, ki]  = lorenz_forward(
                 emc,
@@ -90,10 +90,22 @@ function pushforward_one(cfg, N_ens, rng_idx; method = method_cases[1])
     @info "Saved pushforward to $(post_fn)"
 end
 
-@assert EXPERIMENT in (:l96_const, :l96_vec, :l96_flux) "EXPERIMENT must be :l96_const, :l96_vec, or :l96_flux (got $EXPERIMENT)"
-cfg = experiment_config(EXPERIMENT)
-for rng_idx in 1:cfg.n_repeats
-    for N_ens in cfg.N_ens_sizes
+function main()
+    exp = l96_experiment()
+    @assert exp in (:l96_const, :l96_vec, :l96_flux) "EXPERIMENT must be :l96_const, :l96_vec, or :l96_flux (got $exp)"
+    cfg   = experiment_config(exp)
+    tasks = flat_tasks(cfg)
+    idx   = task_index_from_args()
+
+    if isnothing(idx)
+        for (N_ens, rng_idx) in tasks
+            pushforward_one(cfg, N_ens, rng_idx)
+        end
+    else
+        idx < 1 || idx > length(tasks) && error("Task index $(idx) out of range 1:$(length(tasks))")
+        N_ens, rng_idx = tasks[idx]
         pushforward_one(cfg, N_ens, rng_idx)
     end
 end
+
+main()

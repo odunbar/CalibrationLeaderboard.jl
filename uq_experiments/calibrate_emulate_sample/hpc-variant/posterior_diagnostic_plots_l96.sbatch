@@ -1,5 +1,5 @@
 #!/bin/bash
-# Array job: one task per (N_ens, rng_idx) pair (60 tasks for each L96 case).
+# Array job: one task per (N_ens, rng_idx) pair (180 tasks for each L96 case).
 # Each task pushes its posterior forward through the Lorenz96 forward map and
 # saves pushforward + posterior-ribbon diagnostic figures.
 #
@@ -9,8 +9,8 @@
 #          --export=ALL,EXPERIMENT=l96_vec posterior_diagnostic_plots_l96.sbatch
 
 #SBATCH --job-name=post_diag
-#SBATCH --output=output/slurm/post_diag_%A_%a.out
-#SBATCH --error=output/slurm/post_diag_%A_%a.err
+#SBATCH --output=../output/slurm/post_diag_%A_%a.out
+#SBATCH --error=../output/slurm/post_diag_%A_%a.err
 #SBATCH --array=1-180%100
 #SBATCH --time=00:30:00
 #SBATCH --mem=16G
@@ -29,4 +29,4 @@ cd "${SLURM_SUBMIT_DIR}"
 
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
-julia --project=. posterior_diagnostic_plots_l96.jl "${SLURM_ARRAY_TASK_ID}"
+julia --project=.. ../posterior_diagnostic_plots_l96.jl "${SLURM_ARRAY_TASK_ID}"

@@ -9,6 +9,8 @@ using CalibrateEmulateSample.EnsembleKalmanProcesses
 
 include("experiment_config.jl")
 
+EXPERIMENT = l96_experiment()  # respects EXPERIMENT env var / CLI arg
+
 ###########################################################################
 #################### Metric parameters ###################################
 ###########################################################################
@@ -60,7 +62,7 @@ end
 first_post_fn = joinpath(data_save_directory, posterior_filename(cfg, valid_file_items[1]...))
 first_loaded  = JLD2.load(first_post_fn)
 if !haskey(first_loaded, "pushforward_output_samples")
-    error("Pushforward data not found in $(first_post_fn). Run pushforward_from_posterior_l96.jl first.")
+    error("Pushforward data not found in $(first_post_fn). Run pushforward_from_posterior.sbatch first.")
 end
 
 n_params              = length(vec(mean(first_loaded["posteriors_by_k"][1])))
@@ -108,7 +110,7 @@ for (N_ens, rng_idx) in valid_file_items
     loaded = JLD2.load(joinpath(data_save_directory, post_fn))
 
     if !haskey(loaded, "pushforward_output_samples")
-        @warn "Pushforward data missing for $(post_fn); skipping. Run pushforward_from_posterior_l96.jl first."
+        @warn "Pushforward data missing for $(post_fn); skipping. Run pushforward_from_posterior.sbatch first."
         continue
     end
 

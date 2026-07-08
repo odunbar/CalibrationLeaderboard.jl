@@ -4,8 +4,8 @@
 # array tasks start with a warm package cache and never race to precompile.
 
 #SBATCH --job-name=precompile
-#SBATCH --output=output/slurm/precompile_%j.out
-#SBATCH --error=output/slurm/precompile_%j.err
+#SBATCH --output=../output/slurm/precompile_%j.out
+#SBATCH --error=../output/slurm/precompile_%j.err
 #SBATCH --time=00:30:00
 #SBATCH --mem=8G
 #SBATCH --cpus-per-task=4
@@ -33,5 +33,5 @@ println("JULIA_CPU_TARGET = ", get(ENV,"JULIA_CPU_TARGET","<unset>"))
 '
 # these two should be the same
 
-julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+julia --project=.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 

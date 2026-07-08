@@ -1,8 +1,8 @@
 #!/bin/bash
 # SLURM array job for the calibrate stage.
-# array=1-60%20 means run array 1-60, with max of 20 at a time.
+# array=1-180%100 means run array 1-180, with max of 100 at a time.
 #
-# L63 (60 tasks = 3 N_ens × 20 repeats):
+# L63 (180 tasks = 9 N_ens × 20 repeats):
 #   sbatch --export=ALL,SCRIPT=calibrate_l63.jl calibrate_array.sbatch
 #
 # L96 (same count; adjust SCRIPT and set EXPERIMENT):
@@ -13,13 +13,13 @@
 # If N_ens_sizes or n_repeats change, update --array upper bound to match
 # length(N_ens_sizes) * n_repeats.
 #
-# One-time precompile before submitting (avoids 60 simultaneous precompiles):
-#   mkdir -p output/slurm
-#   julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+# One-time precompile before submitting (avoids 180 simultaneous precompiles):
+#   mkdir -p ../output/slurm
+#   julia --project=.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 
 #SBATCH --job-name=calib
-#SBATCH --output=output/slurm/calib_%A_%a.out
-#SBATCH --error=output/slurm/calib_%A_%a.err
+#SBATCH --output=../output/slurm/calib_%A_%a.out
+#SBATCH --error=../output/slurm/calib_%A_%a.err
 #SBATCH --array=1-180%100 
 #SBATCH --time=02:00:00
 #SBATCH --mem=16G
@@ -41,4 +41,4 @@ cd "${SLURM_SUBMIT_DIR}"
 
 export JULIA_PKG_PRECOMPILE_AUTO=0 # already precompiled so should not get all jobs to re-precompile
 
-julia --project=. "${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
+julia --project=.. "../${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"

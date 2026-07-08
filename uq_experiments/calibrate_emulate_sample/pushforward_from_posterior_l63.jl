@@ -67,9 +67,20 @@ function pushforward_one(cfg, N_ens, rng_idx; method = method_cases[1])
     @info "Saved pushforward to $(post_fn)"
 end
 
-cfg = experiment_config(:l63)
-for rng_idx in 1:cfg.n_repeats
-    for N_ens in cfg.N_ens_sizes
+function main()
+    cfg   = experiment_config(:l63)
+    tasks = flat_tasks(cfg)
+    idx   = task_index_from_args()
+
+    if isnothing(idx)
+        for (N_ens, rng_idx) in tasks
+            pushforward_one(cfg, N_ens, rng_idx)
+        end
+    else
+        idx < 1 || idx > length(tasks) && error("Task index $(idx) out of range 1:$(length(tasks))")
+        N_ens, rng_idx = tasks[idx]
         pushforward_one(cfg, N_ens, rng_idx)
     end
 end
+
+main()

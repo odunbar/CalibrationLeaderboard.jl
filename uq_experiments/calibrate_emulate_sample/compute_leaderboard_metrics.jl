@@ -3,22 +3,38 @@ using Distributions
 using Statistics
 using Printf
 using DataFrames
+using Dates
 using JLD2
 using LinearAlgebra
 
-indir = "." #joinpath("output","from-hpc_2026-05-31")
-#filename = "ces-eki-dmc_l63_ensemble_results_2026-05-29.nc"
-#prelim_jld2_file = "l63_computed_preliminaries.jld2"
-#filename = "ces-eki-dmc_l96_ensemble_results_2026-05-29.nc"
-#prelim_jld2_file = "l96_computed_preliminaries_const-force.jld2"
-#filename = "ces-eki-dmc_l96_spatial_forcing_ensemble_results_2026-05-29.nc"
-#prelim_jld2_file = "l96_computed_preliminaries_vec-force.jld2"
-filename         = "ces-eki-dmc_l96_nn_forcing_ensemble_results_2026-05-31.nc"
-prelim_jld2_file = "l96_computed_preliminaries_flux-force.jld2"
+calib_date = Date("2026-06-15", "yyyy-mm-dd")
+indir = joinpath("output","from-hpc_$(calib_date)")
 
-filename        = joinpath(indir, filename)
+experiment_list = [:l63, :l96_const, :l96_vec, :l96_flux ]
+experiment = experiment_list[2] 
+if experiment == :l63
+    filename = "ces-eki-dmc_l63_ensemble_results_$(calib_date).nc"
+    prelim_jld2_file = "l63_computed_preliminaries.jld2"
+elseif experiment == :l96_const
+    filename = "ces-eki-dmc_l96_ensemble_results_$(calib_date).nc"
+    prelim_jld2_file = "l96_computed_preliminaries_const-force.jld2"
+elseif experiment == :l96_vec
+    filename = "ces-eki-dmc_l96_spatial_forcing_ensemble_results_$(calib_date).nc"
+    prelim_jld2_file = "l96_computed_preliminaries_vec-force.jld2"
+elseif experiment == :l96_flux
+    filename = "ces-eki-dmc_l96_nn_forcing_ensemble_results_$(calib_date).nc"
+    prelim_jld2_file = "l96_computed_preliminaries_flux-force.jld2"
+else
+    throw(ArgumentError("Expected Experiment from $(experiment_list). Got $(experiment)."))
+end
+
+filename = joinpath(indir, filename)
 prelim_filename = joinpath(indir, prelim_jld2_file)
-@info "computing leaderboard metrics from $(filename)"
+# Optional: path to the prelim JLD2 written by calibrate_l96.jl.
+# Enables coverage recomputation at any quantile and R-whitened PCA coverage.
+# e.g. "output/l96_computed_preliminaries_const-force.jld2"
+
+
 
 ###########################################################################
 #################### Metric parameters ###################################
@@ -28,6 +44,7 @@ calibration_check_quantiles = [0.15, 0.5, 0.85] # quantile levels for calibratio
 n_lowrank_modes             = 2              # top EOF modes for perturbed-low-rank (aI+UDU') Mahalanobis
 R_variance_retain           = 0.99             # fraction of R variance to retain for R-whitened PCA coverage
 budget_target_scalings      = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5]  # c values for α_c(q) = c·√(q(1−q)/N_y)
+
 
 ###########################################################################
 #################### Display filters ####################################
@@ -52,7 +69,7 @@ budget_target_scalings      = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5]  # c values
 #  display_ens_sizes — which ensemble-size values (integers) to show in tables.
 
 display_spaces    = [:output]   # e.g. [:param, :forcing]
-display_metrics   = [:coverage, :budget_for_coverage]  # e.g. [:mahalanobis, :plr_mahalanobis]
+display_metrics   = [:coverage, :budget_for_coverage]#, :mahalanobis]  # e.g. [:mahalanobis, :plr_mahalanobis]
 display_ens_sizes = nothing   # e.g. [10, 50]
 
 show_metric(m) = isnothing(display_metrics)  || m in display_metrics
@@ -71,9 +88,9 @@ lp = ncd[:posterior_logpdf_true_v_map]
 ens_vals   = try Int.(ncd["ensemble_size"][:]) catch; collect(1:n_ens_size) end
 kiter_vals = try Int.(ncd["k_iter"][:])        catch; collect(1:n_k_iter)   end
 
-# Load truth and observation-noise covariance from the prelim JLD2 (calibrate output).
-# Falls back gracefully if the file is absent.
-if isfile(prelim_filename)
+# Load truth and observation-noise covariance from the prelim JLD2 (calibrate_l96.jl output).
+# Falls back to truth_output stored in the netcdf (legacy) if JLD2 is not configured.
+if !isnothing(prelim_jld2_file) && isfile(prelim_filename)
     @info "using precomputed quantities from $(prelim_filename)"
     _pd     = JLD2.load(prelim_filename)
     y_truth = Float64.(_pd["y"])
@@ -83,7 +100,7 @@ elseif haskey(ncd, "truth_output")
     y_truth = Float64.(ncd["truth_output"][:])
     R_obs   = nothing
 else
-    @warn "Prelim file not found at $(prelim_filename) and truth_output absent from NC; R-whitened coverage disabled."
+    @error "precomputed quantities NOT FOUND at $(prelim_filename)"
     y_truth = nothing
     R_obs   = nothing
 end
@@ -502,7 +519,7 @@ if show_metric(:coverage)
                 os = os_all[ri, ei, ki, :, :]   # (n_ps, n_out)
                 all(isnan.(os)) && continue
                 if do_white
-                    size(os, 2) != size(V_R, 1) && continue
+                    size(os, 2) != size(V_R, 1) && continue   # dim mismatch; leave cov_arr[ri,ei,ki,:] as NaN
                     sw        = Matrix((V_R' * Matrix(os')) ./ sqrt.(λ_R))'   # (n_ps, k_R)
                     truth_vec = yw
                     n_cov_dim = k_R
@@ -627,6 +644,8 @@ if show_metric(:budget_for_coverage)
     bq_vals = calibration_check_quantiles
 
     # ── Table printer ──────────────────────────────────────────────────────
+    # When a (N_ens, c) pair achieves the target in zero repeats, all statistics
+    # are reported as 0 (consistent sentinel for "not achieved").
     function _bfcov_print_table(budgets_mat, label, n_dim_label)
         println("\n$(label)  (N_y = $(n_dim_label))")
         println(@sprintf("  %-10s  %-6s  %8s  %8s  %14s  %8s  %8s  %s",
@@ -649,6 +668,19 @@ if show_metric(:budget_for_coverage)
     end
 
     # ── Figure builder ─────────────────────────────────────────────────────
+    # Layout: (2*n_rows, n_cols).  For each c value at subplot index si:
+    #   Top tier (si):              budget whisker per N_ens column
+    #   Bottom tier (si + n_rows*n_cols): failure-fraction bar per N_ens column
+    #
+    # Whisker conventions (top tier):
+    #   n_conv = 0  → red ✕ at y = 0
+    #   n_conv = 1  → marker at the single budget value
+    #   n_conv = 2  → vertical line (min → max) with end caps
+    #   n_conv ≥ 3  → vertical line (min → max), end caps, filled median marker
+    # Annotation "n_conv/n_rng" floats above each whisker column.
+    #
+    # Fraction bars (bottom tier): tomato bar height = (n_rng − n_conv) / n_rng,
+    # y-axis fixed [0, 1].  Taller bar = more failures.
     function _bfcov_make_figure(budgets_mat, label, n_dim_label;
                                 ylabel_str   = "budget  (N_ens · k_iter)",
                                 title_prefix = "Budget for coverage")
@@ -763,12 +795,11 @@ if show_metric(:budget_for_coverage)
 
     budget_plot_data = []   # [(label, n_dim_label, budgets_mat), ...]
     kiter_plot_data  = []   # [(label, n_dim_label, kiters_mat), ...]
-    nc_tag           = splitext(basename(filename))[1]
 
     # ── Raw coverage from stored NC variables ──────────────────────────────
-    for (space_label, space_sym, cov_key, dim_key) in [
-        ("Output-space raw",  :output,  "output_coverage",  "output_dim"),
-        ("Forcing-space raw", :forcing, "forcing_coverage", "forcing_dim"),
+    for (space_label, space_sym, cov_key, dim_key, budget_nc_key, iters_nc_key) in [
+        ("Output-space raw",  :output,  "output_coverage",  "output_dim",  "output_budget_to_target",  "output_iters_to_target"),
+        ("Forcing-space raw", :forcing, "forcing_coverage", "forcing_dim", "forcing_budget_to_target", "forcing_iters_to_target"),
     ]
         (show_space(space_sym) && haskey(ncd, cov_key) && haskey(ncd, dim_key)) || continue
 
@@ -882,7 +913,7 @@ if show_metric(:budget_for_coverage)
     for (label, n_dim_label, bmat) in budget_plot_data
         p_fig = _bfcov_make_figure(bmat, label, n_dim_label)
         tag   = replace(lowercase(label), r"[^a-z0-9]+" => "_")
-        base  = joinpath(indir, "budget_for_coverage_$(tag)_$(nc_tag)")
+        base  = joinpath(indir, "budget_for_coverage_$(tag)_$(experiment)_$(calib_date)")
         savefig(p_fig, base * ".pdf")
         savefig(p_fig, base * ".png")
         @info "Saved: $(base).pdf"
@@ -893,7 +924,7 @@ if show_metric(:budget_for_coverage)
                                    ylabel_str   = "k_iter",
                                    title_prefix = "Iterations for coverage")
         tag   = replace(lowercase(label), r"[^a-z0-9]+" => "_")
-        base  = joinpath(indir, "iters_for_coverage_$(tag)_$(nc_tag)")
+        base  = joinpath(indir, "iters_for_coverage_$(tag)_$(experiment)_$(calib_date)")
         savefig(p_fig, base * ".pdf")
         savefig(p_fig, base * ".png")
         @info "Saved: $(base).pdf"

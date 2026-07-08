@@ -9,6 +9,11 @@ using CalibrateEmulateSample.EnsembleKalmanProcesses
 
 include("experiment_config.jl")
 
+# Allow EXPERIMENT env var to override the toggle in experiment_config.jl
+if haskey(ENV, "EXPERIMENT")
+    EXPERIMENT = Symbol(ENV["EXPERIMENT"])
+end
+
 ###########################################################################
 #################### Metric parameters ###################################
 ###########################################################################
@@ -63,7 +68,7 @@ end
 first_post_fn = joinpath(data_save_directory, posterior_filename(cfg, valid_file_items[1]...))
 first_loaded  = JLD2.load(first_post_fn)
 if !haskey(first_loaded, "pushforward_output_samples")
-    error("Pushforward data not found in $(first_post_fn). Run pushforward_from_posterior_$(cfg.model).jl first.")
+    error("Pushforward data not found in $(first_post_fn). Run pushforward_from_posterior.sbatch first.")
 end
 
 n_params              = length(vec(mean(first_loaded["posteriors_by_k"][1])))
@@ -104,18 +109,18 @@ logpdf_true_v_map_arr = fill(NaN, n_rng, n_ens, n_k)
 output_samples_arr            = fill(NaN, n_rng, n_ens, n_k, n_pushforward_samples, n_output)
 output_mahal_arr              = fill(NaN, n_rng, n_ens, n_k)
 output_logpdf_true_v_map_arr  = fill(NaN, n_rng, n_ens, n_k)
-output_plr_mahal_top_arr      = fill(NaN, n_rng, n_ens, n_k)
-output_plr_mahal_residual_arr = fill(NaN, n_rng, n_ens, n_k)
-output_coverage_arr           = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
+output_plr_mahal_top_arr       = fill(NaN, n_rng, n_ens, n_k)
+output_plr_mahal_residual_arr  = fill(NaN, n_rng, n_ens, n_k)
+output_coverage_arr  = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
 
 if has_forcing
     forcing_samples_arr           = fill(NaN, n_rng, n_ens, n_k, n_pushforward_samples, n_forcing)
     forcing_mahal_arr             = fill(NaN, n_rng, n_ens, n_k)
     forcing_logpdf_true_v_map_arr = fill(NaN, n_rng, n_ens, n_k)
-    forcing_plr_mahal_top_arr     = fill(NaN, n_rng, n_ens, n_k)
+    forcing_plr_mahal_top_arr      = fill(NaN, n_rng, n_ens, n_k)
     forcing_plr_mahal_residual_arr = fill(NaN, n_rng, n_ens, n_k)
-    forcing_coverage_arr          = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
-    truth_forcing_arr             = fill(NaN, n_rng, n_ens, n_forcing)
+    forcing_coverage_arr = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
+    truth_forcing_arr    = fill(NaN, n_rng, n_ens, n_forcing)
 end
 
 ###########################################################################
@@ -128,7 +133,7 @@ for (N_ens, rng_idx) in valid_file_items
     loaded = JLD2.load(joinpath(data_save_directory, post_fn))
 
     if !haskey(loaded, "pushforward_output_samples")
-        @warn "Pushforward data missing for $(post_fn); skipping. Run pushforward_from_posterior_$(cfg.model).jl first."
+        @warn "Pushforward data missing for $(post_fn); skipping. Run pushforward_from_posterior.sbatch first."
         continue
     end
 
@@ -172,9 +177,9 @@ for (N_ens, rng_idx) in valid_file_items
             @warn "Posterior covariance rank $(r) = num_samples-1 = $(num_samples-1) < n_params-1 = $(n_params-1). Metric may be inaccurate; recommend num_samples > $(n_params)."
         end
 
-        post_mean_arr[i, j, k, :]      = pm
-        post_cov_arr[i, j, k, :, :]    = pc
-        mahal_arr[i, j, k]             = diff' * (C_reg \ diff)
+        post_mean_arr[i, j, k, :]   = pm
+        post_cov_arr[i, j, k, :, :] = pc
+        mahal_arr[i, j, k]           = diff' * (C_reg \ diff)
         logpdf_true_v_map_arr[i, j, k] = logpdf(post_normal, truth_params) - logpdf(post_normal, pmode)
 
         ki = findfirst(==(k), pf_k_values)
@@ -238,6 +243,10 @@ end
 ###########################################################################
 #################### Budget for coverage #################################
 ###########################################################################
+# For each (target_scaling c, N_ens, rng seed): smallest k such that
+#   |S(q) − q| ≤ c·√(q(1−q)/N_y) for ALL quantile levels q.
+# budget_to_target = N_ens · k,  iters_to_target = k.
+# NaN when the target was not reached within the k_iter range.
 
 output_budget_to_target = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
 output_iters_to_target  = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)

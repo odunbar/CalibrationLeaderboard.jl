@@ -6,7 +6,7 @@ using JLD2
 using Statistics
 using Dates
 
-# CES 
+# CES
 using EnsembleKalmanProcesses
 using EnsembleKalmanProcesses.DataContainers
 using EnsembleKalmanProcesses.ParameterDistributions
@@ -14,224 +14,244 @@ using EnsembleKalmanProcesses.Localizers
 
 const EKP = EnsembleKalmanProcesses
 
-include(joinpath(@__DIR__, "..", "..", "common", "forward_maps", "Lorenz63.jl")) # Contains Lorenz 96 source code
+include(joinpath(@__DIR__, "..", "..", "common", "forward_maps", "Lorenz63.jl"))
 include("experiment_config.jl")
 
 verbose_flag = false
 save_all_ekp = true
-########################################################################
-############### Choose problem type and structure ######################
-########################################################################
-
-cfg         = experiment_config(:l63)
-N_ens_sizes = cfg.N_ens_sizes
-N_iter      = cfg.N_iter
-n_repeats   = cfg.n_repeats
-terminate_at = cfg.terminate_at
-rng_seeds   = randperm(1_000_000)[1:n_repeats] # list of random seeds
-@info "Running Lorenz 63 problem"
-@info "Maximum number of EKI iterations: $N_iter"
-configuration =
-    Dict("N_iter" => N_iter, "N_ens_sizes" => N_ens_sizes, "terminate_at"=> terminate_at, "rng_seeds" => rng_seeds)
-
-nx = 3  # dimensions of parameter vector
-nu = 2
-truth_params = EnsembleMemberConfig([28.0, 8.0 / 3.0])
-
-#=
-the following better encoder this prior:
-prior_mean = [3.3, 1.2]
-prior_cov = [
-    0.15^2 0
-    0 0.5^2
-]
-distribution = Parameterized(MvNormal(prior_mean, prior_cov))
-constraint = repeat([no_constraint()], 2) # TODO: fix this... 
-name = "l63_prior"
-prior = ParameterDistribution(distribution, constraint, name)
-=#
-
-prior_r = constrained_gaussian("rho", exp(3.3), 4.153, 0, Inf)
-prior_b = constrained_gaussian("beta", exp(1.2), 2.016, 0 ,Inf)
-prior = combine_distributions([prior_r, prior_b])
-#Creating prior distribution
-T = 40.0
-
-
 
 ########################################################################
-############################ Problem setup #############################
+############### Deterministic problem setup ############################
 ########################################################################
-rng_seed_init = 11
-rng_i = MersenneTwister(rng_seed_init)
 
-output_dir = joinpath(@__DIR__, "output")
-if !isdir(output_dir)
-    mkdir(output_dir)
+function build_setup(cfg, output_dir)
+    N_iter      = cfg.N_iter
+    N_ens_sizes = cfg.N_ens_sizes
+    terminate_at = cfg.terminate_at
+    # Seeded so every array task sees the same rng_seeds list.
+    rng_seeds = randperm(MersenneTwister(20260529), 1_000_000)[1:cfg.n_repeats]
+
+    nx = 3
+    nu = 2
+    ny = 9
+    truth_params = EnsembleMemberConfig([28.0, 8.0 / 3.0])
+
+    prior_r = constrained_gaussian("rho", exp(3.3), 4.153, 0, Inf)
+    prior_b = constrained_gaussian("beta", exp(1.2), 2.016, 0, Inf)
+    prior = combine_distributions([prior_r, prior_b])
+
+    # Truth data (spin-up, synthetic observations, noise/IC covariances) is
+    # computed once by l63_preliminaries.jl and shared by every array task.
+    prelim_file = joinpath(output_dir, prelim_filename(cfg))
+    isfile(prelim_file) || error("Prelim file not found: $(prelim_file)\nRun l63_preliminaries.jl first.")
+    prelim = load_preliminaries(prelim_file)
+    x0                     = prelim.x0
+    y                      = prelim.y
+    ic_cov_sqrt            = prelim.ic_cov_sqrt
+    R                      = prelim.R
+    R_inv_var              = prelim.R_inv_var
+    lorenz_config_settings = prelim.lorenz_config_settings
+    observation_config     = prelim.observation_config
+
+    configuration = Dict(
+        "N_iter"       => N_iter,
+        "N_ens_sizes"  => N_ens_sizes,
+        "terminate_at" => terminate_at,
+        "rng_seeds"    => rng_seeds,
+    )
+
+    return (;
+        nx, nu, ny,
+        truth_params, prior,
+        x0,
+        y, R, R_inv_var,
+        lorenz_config_settings, observation_config, ic_cov_sqrt,
+        rng_seeds, configuration,
+        N_iter, terminate_at,
+    )
 end
 
-ny = 9
-t = 0.01
-T_start = 30.0
-T_end = T
-pdc = compute_perfect_data(
-    truth_params, nx, ny,
-    LorenzConfig(t, 1000.0), rand(rng_i, Normal(0.0, 1.0), nx),
-    LorenzConfig(t, T), ObservationConfig(T_start, T_end),
-)
-x0                     = pdc.x0
-y                      = pdc.y
-lorenz_config_settings = pdc.lorenz_config_settings
-observation_config     = pdc.observation_config
-R                      = pdc.R
-R_inv_var              = pdc.R_inv_var
-ic_cov_sqrt            = pdc.ic_cov_sqrt
-
-prelim_file = joinpath(output_dir, "l63_computed_preliminaries.jld2")
-if !isfile(prelim_file)
-    save_preliminaries(pdc, prelim_file)
-    @info "Saved computed quantities to $(prelim_file)"
-end
-
-########################################################################
-########################### Running EKI Race ###########################
-########################################################################
-
-conv_alg_iters = fill(NaN, 4, length(N_ens_sizes), length(rng_seeds))
-final_parameters = zeros(4, length(N_ens_sizes), length(rng_seeds), nu)
-final_model_output = zeros(4, length(N_ens_sizes), length(rng_seeds), ny)
-
-# method_names defined in experiment_config.jl
-
-
-for (rr, rng_seed) in enumerate(rng_seeds)
-    @info "Random seed: $(rng_seed)"
-    rng = MersenneTwister(rng_seed)
-
-    for (ee, N_ens) in enumerate(N_ens_sizes)
-        # initial parameters: N_params x N_ens
-        initial_params = construct_initial_ensemble(rng, prior, N_ens)
-        methods = [
-            Inversion(),
-#            TransformInversion(),
-#            GaussNewtonInversion(prior),
-#            Unscented(prior),
-        ]
-
-        @info "Ensemble size: $(N_ens)"
-        for (kk, method) in enumerate(methods)
-            @info "Method: $(nameof(typeof(method)))"
-            if isa(method, Unscented)
-                ekpobj = EKP.EnsembleKalmanProcess(
-                    y,
-                    R,
-                    deepcopy(method);
-                    rng = copy(rng),
-                    verbose = verbose_flag,
-                    localization_method = NoLocalization(),
-                    scheduler = DataMisfitController(terminate_at = terminate_at),
-                )
-            else
-                ekpobj = EKP.EnsembleKalmanProcess(
-                    initial_params,
-                    y,
-                    R,
-                    deepcopy(method);
-                    rng = copy(rng),
-                    verbose = verbose_flag,
-                    localization_method = NoLocalization(),
-                    scheduler = DataMisfitController(terminate_at = terminate_at),
-                )
+# Write prior files for all 4 method dirs, idempotent.
+function write_priors(cfg, setup, output_dir)
+    for method_name in method_cases
+        per_method_dir = joinpath(output_dir, calib_directory(method_name, cfg))
+        mkpath(per_method_dir)
+        pf = joinpath(per_method_dir, prior_filename(cfg))
+        if !isfile(pf)
+            pf_tmp = splitext(pf)[1] * ".tmp.$(getpid()).jld2"
+            JLD2.save(pf_tmp, "prior", setup.prior)
+            try
+                mv(pf_tmp, pf)
+            catch
+                rm(pf_tmp; force = true)
             end
-            Ne = get_N_ens(ekpobj)
-
-            ens_mean_final = zeros(nu)
-            G_ens_mean_final = zeros(ny)
-            for i in 1:N_iter
-                params_i = get_ϕ_final(prior, ekpobj)
-
-                # Calculating RMSE_e (diagnostic; not used as stopping criterion)
-                ens_mean = mean(params_i, dims = 2)[:] # in constrained_space
-                G_ens_mean = lorenz_forward(
-                    EnsembleMemberConfig(ens_mean),
-                    x0 .+ ic_cov_sqrt * rand(rng, Normal(0.0, 1.0), nx, 1),
-                    lorenz_config_settings,
-                    observation_config,
-                )
-                RMSE_e = norm(R_inv_var * (y - G_ens_mean[:])) / sqrt(size(y, 1))
-                @info "RMSE (at G(u_mean)): $(RMSE_e)"
-
-                ens_mean_final = ens_mean
-                G_ens_mean_final = G_ens_mean[:]
-
-                G_ens = hcat(
-                    [
-                        lorenz_forward(
-                            EnsembleMemberConfig(params_i[:, j]),
-                            (x0 .+ ic_cov_sqrt * rand(rng, Normal(0.0, 1.0), nx, Ne))[:, j],
-                            lorenz_config_settings,
-                            observation_config,
-                        ) for j in 1:Ne
-                    ]...,
-                )
-                terminated = EKP.update_ensemble!(ekpobj, G_ens)
-                if !isnothing(terminated)
-                    conv_alg_iters[kk, ee, rr] = i * Ne 
-                    break
-                end
-            end
-            final_parameters[kk, ee, rr, :] = ens_mean_final
-            final_model_output[kk, ee, rr, :] = G_ens_mean_final
-            if isnan(conv_alg_iters[kk, ee, rr]) # if didnt terminate
-                conv_alg_iters[kk, ee, rr] = N_iter * Ne 
-            end
-            
-            final_ensemble = get_ϕ_final(prior, ekpobj)
-
-            # save ekp files
-            per_method_dir = joinpath(output_dir, calib_directory(nameof(typeof(method)), cfg))
-            if rr == 1 && ee == 1
-                if !isdir(per_method_dir)
-                    mkpath(per_method_dir)
-                end
-                JLD2.save(joinpath(per_method_dir, prior_filename(cfg)), "prior", prior)
-            end
-            if save_all_ekp
-                # JLD2
-                JLD2.save(
-                    joinpath(per_method_dir, ekp_filename(cfg, N_ens, rr)),
-                    "N_ens", N_ens,
-                    "method", method,
-                    "ekpobj", ekpobj,
-                )
-                u_stored = get_u(ekpobj, return_array = false)
-                g_stored = get_g(ekpobj, return_array = false)
-                JLD2.save(
-                    joinpath(per_method_dir, results_filename(cfg, N_ens, rr)),
-                    "y", y,
-                    "R", R,
-                    "inputs", u_stored,
-                    "outputs", g_stored,
-                    "truth_params_structure", truth_params, # EnsembleMemberConfig
-                )
-            end
-            
         end
     end
 end
 
-# Saving data:
-data_filename = joinpath(output_dir, summary_filename(cfg))
-JLD2.save(
-    data_filename,
-    "configuration",
-    configuration,
-    "method_names",
-    method_names,
-    "conv_alg_iters",
-    conv_alg_iters,
-    "final_parameters",
-    final_parameters,
-    "final_model_output",
-    final_model_output,
-)
+########################################################################
+############### Per-cell calibration (all 4 methods) ##################
+########################################################################
+
+function calibrate_one(cfg, setup, N_ens, rng_idx, output_dir)
+    rng = MersenneTwister(setup.rng_seeds[rng_idx])
+    @info "Calibrating (N_ens=$(N_ens), rng_idx=$(rng_idx))"
+
+    initial_params = construct_initial_ensemble(rng, setup.prior, N_ens)
+    methods = [
+        Inversion(),
+#        TransformInversion(),
+#        GaussNewtonInversion(setup.prior),
+#        Unscented(setup.prior),
+    ]
+
+    conv_cell   = fill(NaN, 4)
+    params_cell = zeros(4, setup.nu)
+    output_cell = zeros(4, setup.ny)
+
+    for (kk, method) in enumerate(methods)
+        @info "Method: $(nameof(typeof(method)))"
+        if isa(method, Unscented)
+            ekpobj = EKP.EnsembleKalmanProcess(
+                setup.y,
+                setup.R,
+                deepcopy(method);
+                rng = copy(rng),
+                verbose = verbose_flag,
+                localization_method = NoLocalization(),
+                scheduler = DataMisfitController(terminate_at = setup.terminate_at),
+            )
+        else
+            ekpobj = EKP.EnsembleKalmanProcess(
+                initial_params,
+                setup.y,
+                setup.R,
+                deepcopy(method);
+                rng = copy(rng),
+                verbose = verbose_flag,
+                localization_method = NoLocalization(),
+                scheduler = DataMisfitController(terminate_at = setup.terminate_at),
+            )
+        end
+        Ne = get_N_ens(ekpobj)
+
+        ens_mean_final = zeros(setup.nu)
+        G_ens_mean_final = zeros(setup.ny)
+        for i in 1:setup.N_iter
+            params_i = get_ϕ_final(setup.prior, ekpobj)
+            ens_mean = mean(params_i, dims = 2)[:]
+            G_ens_mean = lorenz_forward(
+                EnsembleMemberConfig(ens_mean),
+                setup.x0 .+ setup.ic_cov_sqrt * rand(rng, Normal(0.0, 1.0), setup.nx, 1),
+                setup.lorenz_config_settings,
+                setup.observation_config,
+            )
+            RMSE_e = norm(setup.R_inv_var * (setup.y - G_ens_mean[:])) / sqrt(setup.ny)
+            @info "RMSE (at G(u_mean)): $(RMSE_e)"
+            ens_mean_final = ens_mean
+            G_ens_mean_final = G_ens_mean[:]
+            G_ens = hcat(
+                [
+                    lorenz_forward(
+                        EnsembleMemberConfig(params_i[:, j]),
+                        (setup.x0 .+ setup.ic_cov_sqrt * rand(rng, Normal(0.0, 1.0), setup.nx, Ne))[:, j],
+                        setup.lorenz_config_settings,
+                        setup.observation_config,
+                    ) for j in 1:Ne
+                ]...,
+            )
+            terminated = EKP.update_ensemble!(ekpobj, G_ens)
+            if !isnothing(terminated)
+                conv_cell[kk] = i * Ne
+                break
+            end
+        end
+        params_cell[kk, :] = ens_mean_final
+        output_cell[kk, :] = G_ens_mean_final
+        if isnan(conv_cell[kk])
+            conv_cell[kk] = setup.N_iter * Ne
+        end
+
+        if save_all_ekp
+            per_method_dir = joinpath(output_dir, calib_directory(nameof(typeof(method)), cfg))
+            JLD2.save(
+                joinpath(per_method_dir, ekp_filename(cfg, N_ens, rng_idx)),
+                "N_ens", N_ens,
+                "method", method,
+                "ekpobj", ekpobj,
+            )
+            u_stored = get_u(ekpobj, return_array = false)
+            g_stored = get_g(ekpobj, return_array = false)
+            JLD2.save(
+                joinpath(per_method_dir, results_filename(cfg, N_ens, rng_idx)),
+                "y", setup.y,
+                "R", setup.R,
+                "inputs", u_stored,
+                "outputs", g_stored,
+                "truth_params_structure", setup.truth_params,
+            )
+        end
+    end
+
+    return (conv_cell, params_cell, output_cell)
+end
+
+########################################################################
+############### Summary helpers ########################################
+########################################################################
+
+function save_combined_summary(cfg, setup, output_dir, conv, pars, outs)
+    data_filename = joinpath(output_dir, summary_filename(cfg))
+    JLD2.save(
+        data_filename,
+        "configuration",   setup.configuration,
+        "method_names",    method_names,
+        "conv_alg_iters",  conv,
+        "final_parameters", pars,
+        "final_model_output", outs,
+    )
+    @info "Saved summary to $(data_filename)"
+end
+
+########################################################################
+############### Main dispatcher ########################################
+########################################################################
+
+function main()
+    cfg        = experiment_config(:l63)
+    output_dir = joinpath(@__DIR__, "output")
+    mkpath(output_dir)
+
+    setup = build_setup(cfg, output_dir)
+    write_priors(cfg, setup, output_dir)
+
+    tasks = flat_tasks(cfg)
+    idx   = task_index_from_args()
+
+    if isnothing(idx)
+        # Serial mode: run every cell, assemble and write combined summary.
+        n_ens = length(cfg.N_ens_sizes)
+        n_rep = cfg.n_repeats
+        conv  = fill(NaN, 4, n_ens, n_rep)
+        pars  = zeros(4, n_ens, n_rep, setup.nu)
+        outs  = zeros(4, n_ens, n_rep, setup.ny)
+        for (t, (N_ens, rng_idx)) in enumerate(tasks)
+            ee = (t - 1) ÷ n_rep + 1
+            rr = (t - 1) % n_rep + 1
+            c, p, o = calibrate_one(cfg, setup, N_ens, rng_idx, output_dir)
+            conv[:, ee, rr]    = c
+            pars[:, ee, rr, :] = p
+            outs[:, ee, rr, :] = o
+        end
+        save_combined_summary(cfg, setup, output_dir, conv, pars, outs)
+    else
+        # Array mode: run one cell; ekp/results files are written inside calibrate_one.
+        if idx < 1 || idx > length(tasks)
+            error("SLURM_ARRAY_TASK_ID $(idx) out of range 1:$(length(tasks))")
+        end
+        N_ens, rng_idx = tasks[idx]
+        calibrate_one(cfg, setup, N_ens, rng_idx, output_dir)
+    end
+end
+
+main()

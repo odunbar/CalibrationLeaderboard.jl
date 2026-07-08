@@ -7,8 +7,8 @@
 #   sbatch --dependency=afterok:<pushfwd_jobid> posterior_diagnostic_plots_l63.sbatch
 
 #SBATCH --job-name=post_diag_l63
-#SBATCH --output=output/slurm/post_diag_l63_%A_%a.out
-#SBATCH --error=output/slurm/post_diag_l63_%A_%a.err
+#SBATCH --output=../output/slurm/post_diag_l63_%A_%a.out
+#SBATCH --error=../output/slurm/post_diag_l63_%A_%a.err
 #SBATCH --array=1-180%100
 #SBATCH --time=00:15:00
 #SBATCH --mem=8G
@@ -27,4 +27,4 @@ cd "${SLURM_SUBMIT_DIR}"
 
 export JULIA_PKG_PRECOMPILE_AUTO=0
 
-julia --project=. posterior_diagnostic_plots_l63.jl "${SLURM_ARRAY_TASK_ID}"
+julia --project=.. ../posterior_diagnostic_plots_l63.jl "${SLURM_ARRAY_TASK_ID}"

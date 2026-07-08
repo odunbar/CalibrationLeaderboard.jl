@@ -4,8 +4,10 @@ using LinearAlgebra
 using Random
 using JLD2
 using Statistics
+ENV["GKSwstype"] = "100"
 using Plots
 using Plots.Measures
+
 
 # CES
 using CalibrateEmulateSample.ParameterDistributions
@@ -14,59 +16,9 @@ using CalibrateEmulateSample.EnsembleKalmanProcesses
 include(joinpath(@__DIR__, "..", "..", "common", "forward_maps", "Lorenz63.jl"))
 include("experiment_config.jl")
 
-n_samples_pushforward = 1000
-
 ########################################################################
-################## file-certainty for loading ##########################
+############### Per-cell pushforward ###################################
 ########################################################################
-
-cfg       = experiment_config(:l63)
-method    = method_cases[1]
-calib_dir = calib_directory(method, cfg)
-N_enss    = cfg.N_ens_sizes
-rng_idxs  = collect(1:cfg.n_repeats)
-
-prelim_dir  = joinpath(@__DIR__, "output")
-if !isdir(prelim_dir)
-    mkdir(prelim_dir)
-end
-prelim_file = joinpath(prelim_dir, "l63_computed_preliminaries.jld2")
-if isfile(prelim_file)
-    loaded_data            = JLD2.load(prelim_file)
-    x0                     = loaded_data["x0"]
-    nx                     = length(x0)
-    y                      = loaded_data["y"]
-    ic_cov_sqrt            = loaded_data["ic_cov_sqrt"]
-    R                      = loaded_data["R"]
-    lorenz_config_settings = loaded_data["lorenz_config_settings"]
-    observation_config     = loaded_data["observation_config"]
-
-    @info "loaded precomputed preliminary quantities from $(prelim_file)"
-else
-    throw(ErrorException("preliminaries file not found. \n First run: \n > julia --project calibrate_l63.jl"))
-end
-
-homedir             = joinpath(pwd())
-data_save_directory = joinpath(homedir, "output", calib_dir)
-
-valid_file_items = []
-valid_files      = []
-for N_ens in N_enss
-    for rng_idx in rng_idxs
-        data_file = joinpath(data_save_directory, posterior_filename(cfg, N_ens, rng_idx))
-        if isfile(data_file)
-            push!(valid_files, case_suffix(cfg, N_ens, rng_idx))
-            push!(valid_file_items, (N_ens, rng_idx))
-        end
-    end
-end
-
-@info "Pushing forward posteriors through the forward map from valid files:"
-display(valid_files)
-
-if isempty(valid_file_items)
-    error("No valid posterior files found in $(data_save_directory). Run emulate_sample_l63.jl first.")
-end
 
 function pushforward_metrics(samples::AbstractMatrix, truth::AbstractVector)
     m = vec(mean(samples, dims=2))
@@ -87,8 +39,35 @@ function pushforward_metrics(samples::AbstractMatrix, truth::AbstractVector)
     return mah, lp
 end
 
-for (N_ens, rng_idx) in valid_file_items
-    post_fn = posterior_filename(cfg, N_ens, rng_idx)
+function ensemble_from_posterior_one(cfg, N_ens, rng_idx; method = method_cases[1])
+    n_samples_pushforward = 1000
+
+    calib_dir = calib_directory(method, cfg)
+    post_fn   = posterior_filename(cfg, N_ens, rng_idx)
+
+    # load preliminaries
+    prelim_dir  = joinpath(@__DIR__, "output")
+    prelim_file = joinpath(prelim_dir, "l63_computed_preliminaries.jld2")
+    if !isfile(prelim_file)
+        throw(ErrorException("preliminaries file not found. \n First run: \n > julia --project calibrate_l63.jl"))
+    end
+    loaded_data            = JLD2.load(prelim_file)
+    x0                     = loaded_data["x0"]
+    nx                     = length(x0)
+    y                      = loaded_data["y"]
+    ic_cov_sqrt            = loaded_data["ic_cov_sqrt"]
+    R                      = loaded_data["R"]
+    lorenz_config_settings = loaded_data["lorenz_config_settings"]
+    observation_config     = loaded_data["observation_config"]
+
+    homedir             = joinpath(pwd())
+    data_save_directory = joinpath(homedir, "output", calib_dir)
+
+    if !isfile(joinpath(data_save_directory, post_fn))
+        @warn "No posterior file found for $(case_suffix(cfg, N_ens, rng_idx)); skipping."
+        return
+    end
+
     @info "loading case $(post_fn)"
     loaded_p = JLD2.load(joinpath(data_save_directory, post_fn))
 
@@ -117,7 +96,7 @@ for (N_ens, rng_idx) in valid_file_items
     )
 
     if !haskey(loaded_p, "pushforward_output_samples")
-        error("Pushforward data not found in $(post_fn). Run pushforward_from_posterior_l63.jl first.")
+        error("Pushforward data not found in $(post_fn). Run pushforward_from_posterior.sbatch first.")
     end
     pf_output   = loaded_p["pushforward_output_samples"]   # (n_samples, n_output, n_k)
     pf_k_values = loaded_p["pushforward_k_values"]
@@ -135,6 +114,7 @@ for (N_ens, rng_idx) in valid_file_items
 
         param_diffs = reduce(hcat, [constrained_push_ensemble[:, j] - truth_params_constrained for j in 1:n_samples_pushforward])
 
+        # Mahalanobis and logpdf metrics in parameter and output spaces
         param_mah,  param_lp  = pushforward_metrics(push_ensemble, truth_params)
         output_mah, output_lp = pushforward_metrics(G_ens, y)
         lowbd_par, upbd_par = round.(quantile(Chisq(n_par), [0.01, 0.99]), digits=2)
@@ -249,3 +229,27 @@ for (N_ens, rng_idx) in valid_file_items
         savefig(ribbons_plt, joinpath(data_save_directory, ribbons_fn * ".pdf"))
     end
 end
+
+########################################################################
+############### Main dispatcher ########################################
+########################################################################
+
+function main()
+    cfg   = experiment_config(:l63)
+    tasks = flat_tasks(cfg)
+    idx   = task_index_from_args()
+
+    if isnothing(idx)
+        for (N_ens, rng_idx) in tasks
+            ensemble_from_posterior_one(cfg, N_ens, rng_idx)
+        end
+    else
+        if idx < 1 || idx > length(tasks)
+            error("SLURM_ARRAY_TASK_ID $(idx) out of range 1:$(length(tasks))")
+        end
+        N_ens, rng_idx = tasks[idx]
+        ensemble_from_posterior_one(cfg, N_ens, rng_idx)
+    end
+end
+
+main()
