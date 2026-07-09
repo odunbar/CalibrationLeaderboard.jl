@@ -29,7 +29,7 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1])
     calib_filename_suffix = case_suffix(cfg, N_ens, rng_idx)
     @info("Perform emulate-sample for L63: \n method: $(calib_dir) \n experiment: $(calib_filename_suffix)")
 
-    homedir = pwd()
+    homedir = @__DIR__ # not pwd(), so SLURM jobs submitted from hpc-variant/ find the same output/ as calibrate
     figure_save_directory = joinpath(homedir, "output/", calib_dir)
     data_save_directory   = joinpath(homedir, "output",  calib_dir)
     loaded_calib_files = [

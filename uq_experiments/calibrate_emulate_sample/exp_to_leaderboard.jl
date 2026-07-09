@@ -41,7 +41,7 @@ nc_save_filename = nc_filename(cfg, method)
 #################### Locate valid posterior files ########################
 ###########################################################################
 
-homedir             = joinpath(pwd())
+homedir             = @__DIR__ # not pwd(), so SLURM jobs submitted from hpc-variant/ find the same output/ as calibrate
 data_save_directory = joinpath(homedir, "output", calib_dir)
 
 valid_file_items = []

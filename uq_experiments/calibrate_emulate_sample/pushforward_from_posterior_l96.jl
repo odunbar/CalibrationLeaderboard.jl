@@ -14,7 +14,7 @@ const n_pushforward_samples = 1000
 function pushforward_one(cfg, N_ens, rng_idx; method = method_cases[1])
     force_case          = cfg.force_case
     calib_dir           = calib_directory(method, cfg)
-    homedir             = joinpath(pwd())
+    homedir             = @__DIR__ # not pwd(), so SLURM jobs submitted from hpc-variant/ find the same output/ as calibrate
     data_save_directory = joinpath(homedir, "output", calib_dir)
 
     post_fn  = joinpath(data_save_directory, posterior_filename(cfg, N_ens, rng_idx))

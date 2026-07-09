@@ -27,7 +27,7 @@ force_cases = [cfg.force_case]
 N_enss     = cfg.N_ens_sizes
 rng_idxs   = collect(1:cfg.n_repeats)
 
-homedir = pwd()
+homedir = @__DIR__ # not pwd(), so SLURM jobs submitted from hpc-variant/ find the same output/ as calibrate
 
 # Discover runs that have calibrate output (ekp + results files).
 valid_file_items = []

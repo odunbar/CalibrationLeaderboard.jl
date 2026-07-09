@@ -66,7 +66,7 @@ function ensemble_from_posterior_one(cfg, N_ens, rng_idx; method = method_cases[
     lorenz_config_settings = loaded_data["lorenz_config_settings"]
     observation_config    = loaded_data["observation_config"]
 
-    homedir             = joinpath(pwd())
+    homedir             = @__DIR__ # not pwd(), so SLURM jobs submitted from hpc-variant/ find the same output/ as calibrate
     data_save_directory = joinpath(homedir, "output", calib_dir)
 
     if !isfile(joinpath(data_save_directory, post_fn))
