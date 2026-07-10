@@ -91,8 +91,8 @@ echo "  exp_to_leaderboard job ID: ${LB_JID}"
 echo "=== Done. Monitor with: squeue -u \$USER ==="
 
 
-# sbatch --parsable -A esm --job-name="pushfwd_l96_vec" --export=ALL,EXPERIMENT=l96_vec pushforward_from_posterior.sbatch
+# sbatch --parsable -A esm --job-name="pushfwd_l96_vec" --export=ALL,EXPERIMENT=l96_vec,CALIBRATE_DATE="2026-07-09" pushforward_from_posterior.sbatch
 
-# sbatch -A esm --job-name="post_diag_l96_vec" --export=ALL,EXPERIMENT=l96_vec posterior_diagnostic_plots_l96.sbatch
+# sbatch -A esm --job-name="post_diag_l96_vec" --export=ALL,EXPERIMENT=l96_vec,CALIBRATE_DATE="2026-07-09" posterior_diagnostic_plots_l96.sbatch
 
-# sbatch -A esm --job-name="leaderboard_l96_vec" --export=ALL,EXPERIMENT=l96_vec exp_to_leaderboard.sbatch
+# sbatch -A esm --job-name="leaderboard_l96_vec" --export=ALL,EXPERIMENT=l96_vec,CALIBRATE_DATE="2026-07-09" exp_to_leaderboard.sbatch
