@@ -3,10 +3,14 @@
 # Runs all (N_ens, rng_idx) cases serially in one job (no array needed).
 #
 # Invoked automatically by submit_l*.sh after emulate_sample completes.
+# By default only the "*_minimal.nc" dataset is computed and saved; set
+# SAVE_FULL_NC=true to also compute and save the full "*.nc" dataset.
 # Manual use:
 #   L96: sbatch --dependency=afterok:<emu_jobid> \
 #               --export=ALL,EXPERIMENT=l96_flux exp_to_leaderboard.sbatch
 #   L63: sbatch --dependency=afterok:<emu_jobid> exp_to_leaderboard.sbatch
+#   Full nc: sbatch --dependency=afterok:<emu_jobid> \
+#               --export=ALL,SAVE_FULL_NC=true exp_to_leaderboard.sbatch
 
 #SBATCH --job-name=leaderboard
 #SBATCH --output=../output/slurm/leaderboard_%j.out

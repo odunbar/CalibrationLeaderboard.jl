@@ -14,6 +14,14 @@ if haskey(ENV, "EXPERIMENT")
     EXPERIMENT = Symbol(ENV["EXPERIMENT"])
 end
 
+# By default only the information required for the "*_minimal.nc" leaderboard
+# dataset is computed and saved. Set to true (or override via the SAVE_FULL_NC
+# env var) to also compute and save the full "*.nc" dataset.
+SAVE_FULL_NC = false
+if haskey(ENV, "SAVE_FULL_NC")
+    SAVE_FULL_NC = parse(Bool, ENV["SAVE_FULL_NC"])
+end
+
 ###########################################################################
 #################### Metric parameters ###################################
 ###########################################################################
@@ -126,28 +134,32 @@ yw      = V_R' * y ./ sqrt.(λ_R)
 #################### Pre-allocate arrays #################################
 ###########################################################################
 
-true_param_arr        = fill(NaN, n_rng, n_ens, n_params)
-n_evals_arr           = fill(NaN, n_rng, n_ens)
-post_mean_arr         = fill(NaN, n_rng, n_ens, n_k, n_params)
-post_cov_arr          = fill(NaN, n_rng, n_ens, n_k, n_params, n_params)
-mahal_arr             = fill(NaN, n_rng, n_ens, n_k)
-logpdf_true_v_map_arr = fill(NaN, n_rng, n_ens, n_k)
-output_samples_arr            = fill(NaN, n_rng, n_ens, n_k, n_pushforward_samples, n_output)
-output_mahal_arr              = fill(NaN, n_rng, n_ens, n_k)
-output_logpdf_true_v_map_arr  = fill(NaN, n_rng, n_ens, n_k)
-output_plr_mahal_top_arr       = fill(NaN, n_rng, n_ens, n_k)
-output_plr_mahal_residual_arr  = fill(NaN, n_rng, n_ens, n_k)
-output_coverage_arr  = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
+# R-whitened output coverage is the only metric required for the minimal nc.
 output_coverage_whitened_arr = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
 
-if has_forcing
-    forcing_samples_arr           = fill(NaN, n_rng, n_ens, n_k, n_pushforward_samples, n_forcing)
-    forcing_mahal_arr             = fill(NaN, n_rng, n_ens, n_k)
-    forcing_logpdf_true_v_map_arr = fill(NaN, n_rng, n_ens, n_k)
-    forcing_plr_mahal_top_arr      = fill(NaN, n_rng, n_ens, n_k)
-    forcing_plr_mahal_residual_arr = fill(NaN, n_rng, n_ens, n_k)
-    forcing_coverage_arr = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
-    truth_forcing_arr    = fill(NaN, n_rng, n_ens, n_forcing)
+if SAVE_FULL_NC
+    true_param_arr        = fill(NaN, n_rng, n_ens, n_params)
+    n_evals_arr           = fill(NaN, n_rng, n_ens)
+    post_mean_arr         = fill(NaN, n_rng, n_ens, n_k, n_params)
+    post_cov_arr          = fill(NaN, n_rng, n_ens, n_k, n_params, n_params)
+    mahal_arr             = fill(NaN, n_rng, n_ens, n_k)
+    logpdf_true_v_map_arr = fill(NaN, n_rng, n_ens, n_k)
+    output_samples_arr            = fill(NaN, n_rng, n_ens, n_k, n_pushforward_samples, n_output)
+    output_mahal_arr              = fill(NaN, n_rng, n_ens, n_k)
+    output_logpdf_true_v_map_arr  = fill(NaN, n_rng, n_ens, n_k)
+    output_plr_mahal_top_arr       = fill(NaN, n_rng, n_ens, n_k)
+    output_plr_mahal_residual_arr  = fill(NaN, n_rng, n_ens, n_k)
+    output_coverage_arr  = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
+
+    if has_forcing
+        forcing_samples_arr           = fill(NaN, n_rng, n_ens, n_k, n_pushforward_samples, n_forcing)
+        forcing_mahal_arr             = fill(NaN, n_rng, n_ens, n_k)
+        forcing_logpdf_true_v_map_arr = fill(NaN, n_rng, n_ens, n_k)
+        forcing_plr_mahal_top_arr      = fill(NaN, n_rng, n_ens, n_k)
+        forcing_plr_mahal_residual_arr = fill(NaN, n_rng, n_ens, n_k)
+        forcing_coverage_arr = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
+        truth_forcing_arr    = fill(NaN, n_rng, n_ens, n_forcing)
+    end
 end
 
 ###########################################################################
@@ -164,77 +176,87 @@ for (N_ens, rng_idx) in valid_file_items
         continue
     end
 
-    posteriors_by_k = loaded["posteriors_by_k"]
     k_values        = loaded["k_values"]
-    truth_params    = loaded["truth_params"]
 
     pf_output   = loaded["pushforward_output_samples"]   # (n_samples, n_output, n_k_pos)
     pf_k_values = loaded["pushforward_k_values"]
 
-    if has_forcing
-        pf_forcing        = loaded["pushforward_forcing_samples"]  # (n_samples, n_forcing, n_k_pos)
-        truth_forcing_vec = loaded["truth_forcing"]
-    end
+    if SAVE_FULL_NC
+        posteriors_by_k = loaded["posteriors_by_k"]
+        truth_params    = loaded["truth_params"]
 
-    ekp_loaded     = JLD2.load(joinpath(data_save_directory, ekp_filename(cfg, N_ens, rng_idx)))
-    conv_alg_iters = length(get_g(ekp_loaded["ekpobj"]))
+        if has_forcing
+            pf_forcing        = loaded["pushforward_forcing_samples"]  # (n_samples, n_forcing, n_k_pos)
+            truth_forcing_vec = loaded["truth_forcing"]
+        end
+
+        ekp_loaded     = JLD2.load(joinpath(data_save_directory, ekp_filename(cfg, N_ens, rng_idx)))
+        conv_alg_iters = length(get_g(ekp_loaded["ekpobj"]))
+    end
 
     i = findfirst(==(rng_idx), rng_idxs)
     j = findfirst(==(N_ens), N_enss)
 
-    true_param_arr[i, j, :] = truth_params
-    n_evals_arr[i, j]       = conv_alg_iters * N_ens
-    if has_forcing
-        truth_forcing_arr[i, j, :] = truth_forcing_vec
+    if SAVE_FULL_NC
+        true_param_arr[i, j, :] = truth_params
+        n_evals_arr[i, j]       = conv_alg_iters * N_ens
+        if has_forcing
+            truth_forcing_arr[i, j, :] = truth_forcing_vec
+        end
     end
 
     for k in k_values
-        post_dist = posteriors_by_k[k]
-        pm = vec(mean(post_dist))
-        pc = cov(post_dist)
-        C_reg        = Symmetric(pc + 1e-10 * I)
-        post_normal  = MvNormal(pm, C_reg)
-        post_samples = reduce(vcat, [get_distribution(post_dist)[name] for name in get_name(post_dist)])
-        pmode        = post_samples[:, argmax(logpdf(post_normal, post_samples))]
-        diff         = pm - truth_params
+        if SAVE_FULL_NC
+            post_dist = posteriors_by_k[k]
+            pm = vec(mean(post_dist))
+            pc = cov(post_dist)
+            C_reg        = Symmetric(pc + 1e-10 * I)
+            post_normal  = MvNormal(pm, C_reg)
+            post_samples = reduce(vcat, [get_distribution(post_dist)[name] for name in get_name(post_dist)])
+            pmode        = post_samples[:, argmax(logpdf(post_normal, post_samples))]
+            diff         = pm - truth_params
 
-        num_samples = size(post_samples, 2)
-        r = rank(pc)
-        if r == num_samples - 1 && r < n_params - 1
-            @warn "Posterior covariance rank $(r) = num_samples-1 = $(num_samples-1) < n_params-1 = $(n_params-1). Metric may be inaccurate; recommend num_samples > $(n_params)."
+            num_samples = size(post_samples, 2)
+            r = rank(pc)
+            if r == num_samples - 1 && r < n_params - 1
+                @warn "Posterior covariance rank $(r) = num_samples-1 = $(num_samples-1) < n_params-1 = $(n_params-1). Metric may be inaccurate; recommend num_samples > $(n_params)."
+            end
+
+            post_mean_arr[i, j, k, :]   = pm
+            post_cov_arr[i, j, k, :, :] = pc
+            mahal_arr[i, j, k]           = diff' * (C_reg \ diff)
+            logpdf_true_v_map_arr[i, j, k] = logpdf(post_normal, truth_params) - logpdf(post_normal, pmode)
         end
-
-        post_mean_arr[i, j, k, :]   = pm
-        post_cov_arr[i, j, k, :, :] = pc
-        mahal_arr[i, j, k]           = diff' * (C_reg \ diff)
-        logpdf_true_v_map_arr[i, j, k] = logpdf(post_normal, truth_params) - logpdf(post_normal, pmode)
 
         ki = findfirst(==(k), pf_k_values)
 
         # ── Output-space metrics ──────────────────────────────────────────
-        output_samples_arr[i, j, k, :, :] = pf_output[:, :, ki]
-        os = output_samples_arr[i, j, k, :, :]
-        om = vec(mean(os, dims=1))
-        oc = Symmetric(cov(os) + 1e-10 * I)
-        o_normal = MvNormal(om, oc)
-        o_cols = Matrix(os')
-        o_mode = o_cols[:, argmax(logpdf(o_normal, o_cols))]
-        o_diff = om - y
-        output_mahal_arr[i, j, k]             = o_diff' * (oc \ o_diff)
-        output_logpdf_true_v_map_arr[i, j, k] = logpdf(o_normal, y) - logpdf(o_normal, o_mode)
-        Fo  = eigen(oc)
-        a_o = mean(Fo.values[1:end-n_lowrank_modes])
-        V_o = Fo.vectors[:, end-n_lowrank_modes+1:end]
-        λ_o = Fo.values[end-n_lowrank_modes+1:end]
-        if a_o < 1e-8
-            @warn "Output-space PLR skipped: noise floor a_o=$(a_o) ≈ regularization level. Entries left as NaN."
-        else
-            proj_o = V_o' * o_diff
-            output_plr_mahal_top_arr[i, j, k]      = sum(proj_o.^2 ./ λ_o)
-            output_plr_mahal_residual_arr[i, j, k] = (sum(o_diff.^2) - sum(proj_o.^2)) / a_o
-        end
-        for (qi, qp) in enumerate(marginal_coverage_quantiles)
-            output_coverage_arr[i, j, k, qi] = mean(y .<= [quantile(os[:, d], qp) for d in 1:n_output])
+        os = pf_output[:, :, ki]
+        if SAVE_FULL_NC
+            output_samples_arr[i, j, k, :, :] = os
+
+            om = vec(mean(os, dims=1))
+            oc = Symmetric(cov(os) + 1e-10 * I)
+            o_normal = MvNormal(om, oc)
+            o_cols = Matrix(os')
+            o_mode = o_cols[:, argmax(logpdf(o_normal, o_cols))]
+            o_diff = om - y
+            output_mahal_arr[i, j, k]             = o_diff' * (oc \ o_diff)
+            output_logpdf_true_v_map_arr[i, j, k] = logpdf(o_normal, y) - logpdf(o_normal, o_mode)
+            Fo  = eigen(oc)
+            a_o = mean(Fo.values[1:end-n_lowrank_modes])
+            V_o = Fo.vectors[:, end-n_lowrank_modes+1:end]
+            λ_o = Fo.values[end-n_lowrank_modes+1:end]
+            if a_o < 1e-8
+                @warn "Output-space PLR skipped: noise floor a_o=$(a_o) ≈ regularization level. Entries left as NaN."
+            else
+                proj_o = V_o' * o_diff
+                output_plr_mahal_top_arr[i, j, k]      = sum(proj_o.^2 ./ λ_o)
+                output_plr_mahal_residual_arr[i, j, k] = (sum(o_diff.^2) - sum(proj_o.^2)) / a_o
+            end
+            for (qi, qp) in enumerate(marginal_coverage_quantiles)
+                output_coverage_arr[i, j, k, qi] = mean(y .<= [quantile(os[:, d], qp) for d in 1:n_output])
+            end
         end
         sw = Matrix((V_R' * Matrix(os')) ./ sqrt.(λ_R))'   # (n_pushforward_samples, k_R), R-whitened PCA
         for (qi, qp) in enumerate(marginal_coverage_quantiles)
@@ -242,7 +264,7 @@ for (N_ens, rng_idx) in valid_file_items
         end
 
         # ── Forcing-space metrics (L96 only) ─────────────────────────────
-        if has_forcing
+        if SAVE_FULL_NC && has_forcing
             forcing_samples_arr[i, j, k, :, :] = pf_forcing[:, :, ki]
             fs = forcing_samples_arr[i, j, k, :, :]
             fm = vec(mean(fs, dims=1))
@@ -279,18 +301,20 @@ end
 # budget_to_target = N_ens · k,  iters_to_target = k.
 # NaN when the target was not reached within the k_iter range.
 
-output_budget_to_target = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
-output_iters_to_target  = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
-for (si, c) in enumerate(budget_target_scalings)
-    tol = c .* sqrt.(marginal_coverage_quantiles .* (1 .- marginal_coverage_quantiles) ./ n_output)
-    for ri in 1:n_rng, ei in 1:n_ens, (qi, qp) in enumerate(marginal_coverage_quantiles)
-        for k in 1:n_k
-            s = output_coverage_arr[ri, ei, k, qi]
-            isnan(s) && continue
-            if abs(s - qp) <= tol[qi]
-                output_budget_to_target[ri, ei, si, qi] = N_enss[ei] * k
-                output_iters_to_target[ri, ei, si, qi]  = k
-                break
+if SAVE_FULL_NC
+    output_budget_to_target = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
+    output_iters_to_target  = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
+    for (si, c) in enumerate(budget_target_scalings)
+        tol = c .* sqrt.(marginal_coverage_quantiles .* (1 .- marginal_coverage_quantiles) ./ n_output)
+        for ri in 1:n_rng, ei in 1:n_ens, (qi, qp) in enumerate(marginal_coverage_quantiles)
+            for k in 1:n_k
+                s = output_coverage_arr[ri, ei, k, qi]
+                isnan(s) && continue
+                if abs(s - qp) <= tol[qi]
+                    output_budget_to_target[ri, ei, si, qi] = N_enss[ei] * k
+                    output_iters_to_target[ri, ei, si, qi]  = k
+                    break
+                end
             end
         end
     end
@@ -313,7 +337,7 @@ for (si, c) in enumerate(budget_target_scalings)
     end
 end
 
-if has_forcing
+if SAVE_FULL_NC && has_forcing
     forcing_budget_to_target = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
     forcing_iters_to_target  = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
     for (si, c) in enumerate(budget_target_scalings)
@@ -335,6 +359,8 @@ end
 ###########################################################################
 #################### Save to NetCDF #####################################
 ###########################################################################
+
+if SAVE_FULL_NC
 
 ds = NCDataset(nc_save_filename, "c")
 
@@ -473,6 +499,8 @@ end
 
 close(ds)
 @info "Saved leaderboard data to $(nc_save_filename)"
+
+end # SAVE_FULL_NC
 
 ###########################################################################
 #################### Save minimal NetCDF ##################################

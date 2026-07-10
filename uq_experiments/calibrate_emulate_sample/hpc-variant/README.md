@@ -102,11 +102,14 @@ EXPERIMENT=l96_const julia --project=. posterior_diagnostic_plots_l96.jl 3
 ```
 
 `exp_to_leaderboard.jl` runs all cells serially in a single call (requires
-pushforward to have been run first):
+pushforward to have been run first). By default it only computes and saves
+the `*_minimal.nc` dataset; set `SAVE_FULL_NC=true` to also compute and save
+the full `*.nc` dataset:
 
 ```bash
 julia --project=. exp_to_leaderboard.jl
 EXPERIMENT=l96_const julia --project=. exp_to_leaderboard.jl
+SAVE_FULL_NC=true julia --project=. exp_to_leaderboard.jl
 ```
 
 ## HPC (Caltech Resnick cluster, SLURM)
