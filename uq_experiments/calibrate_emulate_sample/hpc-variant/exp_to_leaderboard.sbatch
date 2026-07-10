@@ -15,7 +15,7 @@
 #SBATCH --job-name=leaderboard
 #SBATCH --output=../output/slurm/leaderboard_%j.out
 #SBATCH --error=../output/slurm/leaderboard_%j.err
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #SBATCH --mem=8G
 #SBATCH --cpus-per-task=4
 #SBATCH --ntasks=1
