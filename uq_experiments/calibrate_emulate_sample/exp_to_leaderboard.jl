@@ -23,6 +23,7 @@ marginal_coverage_quantiles   = collect(0.05:0.05:0.95)
 n_marginal_coverage_quantiles = length(marginal_coverage_quantiles)
 budget_target_scalings        = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5]
 n_target_scalings             = length(budget_target_scalings)
+R_variance_retain             = 0.99   # fraction of R eigenvalue variance retained for the minimal nc's whitened PCA coverage
 
 ###########################################################################
 #################### Config setup ########################################
@@ -35,7 +36,8 @@ N_enss      = cfg.N_ens_sizes
 rng_idxs    = collect(1:cfg.n_repeats)
 has_forcing = cfg.force_case !== nothing
 
-nc_save_filename = nc_filename(cfg, method)
+nc_save_filename    = nc_filename(cfg, method)
+nc_minimal_filename = replace(nc_save_filename, r"\.nc$" => "_minimal.nc")
 
 ###########################################################################
 #################### Locate valid posterior files ########################
@@ -94,7 +96,31 @@ else
     joinpath(homedir, "output", "$(cfg.model)_computed_preliminaries_$(cfg.force_case).jld2")
 end
 isfile(prelim_file) || error("Prelim file not found at $(prelim_file). Run calibrate first.")
-y = JLD2.load(prelim_file, "y")
+y     = JLD2.load(prelim_file, "y")
+R_obs = JLD2.load(prelim_file, "R")
+
+###########################################################################
+#################### R-whitened PCA basis (for minimal nc) ###############
+###########################################################################
+# Output-space coverage in the minimal nc is R-whitened PCA coverage, not raw
+# per-dimension marginal coverage: treating each output dimension as an
+# independent trial double-counts correlated components whenever R has
+# off-diagonal structure. We decorrelate via R's eigenbasis (R = VΛVᵀ), keep
+# the top modes needed to retain R_variance_retain of R's variance, and
+# compute coverage of the whitened truth ỹ = Vᵀy/√λ against the whitened
+# pushforward samples.
+
+eig_R   = eigen(Symmetric(R_obs))
+ord     = sortperm(eig_R.values; rev = true)
+λ_all   = eig_R.values[ord]
+V_all   = eig_R.vectors[:, ord]
+cum_var = cumsum(λ_all) ./ sum(λ_all)
+k_R     = something(findfirst(>=(R_variance_retain), cum_var), length(λ_all))
+V_R     = V_all[:, 1:k_R]
+λ_R     = λ_all[1:k_R]
+yw      = V_R' * y ./ sqrt.(λ_R)
+
+@info "R-whitened PCA: retaining $(k_R)/$(n_output) modes ($(round(100*cum_var[k_R]; digits=2))% variance)"
 
 ###########################################################################
 #################### Pre-allocate arrays #################################
@@ -112,6 +138,7 @@ output_logpdf_true_v_map_arr  = fill(NaN, n_rng, n_ens, n_k)
 output_plr_mahal_top_arr       = fill(NaN, n_rng, n_ens, n_k)
 output_plr_mahal_residual_arr  = fill(NaN, n_rng, n_ens, n_k)
 output_coverage_arr  = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
+output_coverage_whitened_arr = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
 
 if has_forcing
     forcing_samples_arr           = fill(NaN, n_rng, n_ens, n_k, n_pushforward_samples, n_forcing)
@@ -209,6 +236,10 @@ for (N_ens, rng_idx) in valid_file_items
         for (qi, qp) in enumerate(marginal_coverage_quantiles)
             output_coverage_arr[i, j, k, qi] = mean(y .<= [quantile(os[:, d], qp) for d in 1:n_output])
         end
+        sw = Matrix((V_R' * Matrix(os')) ./ sqrt.(λ_R))'   # (n_pushforward_samples, k_R), R-whitened PCA
+        for (qi, qp) in enumerate(marginal_coverage_quantiles)
+            output_coverage_whitened_arr[i, j, k, qi] = mean(yw[d] <= quantile(sw[:, d], qp) for d in 1:k_R)
+        end
 
         # ── Forcing-space metrics (L96 only) ─────────────────────────────
         if has_forcing
@@ -259,6 +290,23 @@ for (si, c) in enumerate(budget_target_scalings)
             if abs(s - qp) <= tol[qi]
                 output_budget_to_target[ri, ei, si, qi] = N_enss[ei] * k
                 output_iters_to_target[ri, ei, si, qi]  = k
+                break
+            end
+        end
+    end
+end
+
+output_budget_to_target_whitened = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
+output_iters_to_target_whitened  = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
+for (si, c) in enumerate(budget_target_scalings)
+    tol = c .* sqrt.(marginal_coverage_quantiles .* (1 .- marginal_coverage_quantiles) ./ k_R)
+    for ri in 1:n_rng, ei in 1:n_ens, (qi, qp) in enumerate(marginal_coverage_quantiles)
+        for k in 1:n_k
+            s = output_coverage_whitened_arr[ri, ei, k, qi]
+            isnan(s) && continue
+            if abs(s - qp) <= tol[qi]
+                output_budget_to_target_whitened[ri, ei, si, qi] = N_enss[ei] * k
+                output_iters_to_target_whitened[ri, ei, si, qi]  = k
                 break
             end
         end
@@ -425,3 +473,54 @@ end
 
 close(ds)
 @info "Saved leaderboard data to $(nc_save_filename)"
+
+###########################################################################
+#################### Save minimal NetCDF ##################################
+###########################################################################
+# Coverage-derived fields only, computed from R-whitened PCA output coverage
+# (see the "R-whitened PCA basis" section above) rather than raw per-dimension
+# marginal coverage — matches the metric in
+# ../GaussNewtonKalmanInversion/exp_to_leaderboard.jl.
+
+ds_min = NCDataset(nc_minimal_filename, "c")
+
+defDim(ds_min, "random_seed",       n_rng)
+defDim(ds_min, "ensemble_size",     n_ens)
+defDim(ds_min, "k_iter",            n_k)
+defDim(ds_min, "coverage_quantile", n_marginal_coverage_quantiles)
+defDim(ds_min, "target_scaling",    n_target_scalings)
+defDim(ds_min, "output_dim",        k_R)   # effective whitened dimension (not full output_dim = n_output)
+
+rng_var_min = defVar(ds_min, "random_seed", Int64, ("random_seed",))
+rng_var_min[:] = rng_idxs
+
+ens_var_min = defVar(ds_min, "ensemble_size", Int64, ("ensemble_size",))
+ens_var_min.attrib["description"] = "Number of ensemble members"
+ens_var_min[:] = N_enss
+
+k_var_min = defVar(ds_min, "k_iter", Int64, ("k_iter",))
+k_var_min.attrib["description"] = "Number of EKP training iterations used to fit the emulator (1-indexed)"
+k_var_min[:] = collect(1:n_k)
+
+cov_q_var_min = defVar(ds_min, "coverage_quantile", Float64, ("coverage_quantile",))
+cov_q_var_min.attrib["description"] = "Quantile levels used for marginal coverage fraction metrics"
+cov_q_var_min[:] = marginal_coverage_quantiles
+
+ts_var_min = defVar(ds_min, "target_scaling", Float64, ("target_scaling",))
+ts_var_min.attrib["description"] = "Scaling c in α_c(q) = c·√(q(1−q)/N_y); tolerance for budget_to_target / iters_to_target"
+ts_var_min[:] = budget_target_scalings
+
+output_coverage_v_min = defVar(ds_min, "output_coverage", Float64, ("random_seed", "ensemble_size", "k_iter", "coverage_quantile"); fillvalue=NaN)
+output_coverage_v_min.attrib["description"] = "R-whitened PCA marginal coverage: fraction of whitened output dims d where ỹ[d] ≤ q_p of whitened ensemble-pushforward samples. Whitening: x̃_d = (Vᵀx)_d / √λ_d where R = VΛVᵀ. Retained $(k_R)/$(n_output) R-eigenmodes ($(round(100*cum_var[k_R]; digits=1))% variance, threshold $(R_variance_retain))."
+output_coverage_v_min[:, :, :, :] = output_coverage_whitened_arr
+
+output_budget_v_min = defVar(ds_min, "output_budget_to_target", Float64, ("random_seed", "ensemble_size", "target_scaling", "coverage_quantile"); fillvalue=NaN)
+output_budget_v_min.attrib["description"] = "Budget (N_ens·k_iter) to first reach |S(q)−q| ≤ c·√(q(1−q)/N_y) per quantile q using R-whitened PCA coverage (N_y = $(k_R) effective whitened dims). NaN = not reached."
+output_budget_v_min[:, :, :, :] = output_budget_to_target_whitened
+
+output_iters_v_min = defVar(ds_min, "output_iters_to_target", Float64, ("random_seed", "ensemble_size", "target_scaling", "coverage_quantile"); fillvalue=NaN)
+output_iters_v_min.attrib["description"] = "Iterations k_iter to first reach R-whitened PCA coverage target per quantile. NaN = not reached."
+output_iters_v_min[:, :, :, :] = output_iters_to_target_whitened
+
+close(ds_min)
+@info "Saved minimal leaderboard data to $(nc_minimal_filename)"
