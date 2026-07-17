@@ -24,10 +24,27 @@ eki_scheduler_variants = [:dmc, :const]
 EKI_SCHEDULER = eki_scheduler_variants[1]
 eki_scheduler_case = haskey(ENV, "EKI_SCHEDULER") ? Symbol(ENV["EKI_SCHEDULER"]) : EKI_SCHEDULER
 
+# Calibrate-stage update rule:
+#   :eki  -> Inversion() (EKI), scheduler chosen via EKI_SCHEDULER above.
+#   :iekf -> GaussNewtonInversion(prior) (IEKF), fixed-step DefaultScheduler(0.1),
+#            matching the scheduler used in the dedicated
+#            uq_experiments/GaussNewtonKalmanInversion experiment. Leaderboard
+#            file-naming key is "ces-iekf-const" (see method_cases_key below).
+# Determines which entry of method_cases is "active" (method_cases[1]), so
+# every downstream stage (emulate_sample, pushforward, exp_to_leaderboard,
+# diagnostic plots) that defaults to method_cases[1] picks up the right
+# calib_directory / leaderboard key automatically.
+# Override via the CALIBRATE_METHOD env var for SLURM runs.
+calibrate_method_variants = [:eki, :iekf]
+CALIBRATE_METHOD = calibrate_method_variants[1]
+calibrate_method_case = haskey(ENV, "CALIBRATE_METHOD") ? Symbol(ENV["CALIBRATE_METHOD"]) : CALIBRATE_METHOD
+
 ########################################################################
 ###############  SHARED CONSTANTS  ####################################
 ########################################################################
-method_cases = ["Inversion", "TransformInversion", "Unscented", "GaussNewtonInversion"]
+method_cases = calibrate_method_case == :iekf ?
+    ["GaussNewtonInversion", "TransformInversion", "Unscented", "Inversion"] :
+    ["Inversion", "TransformInversion", "Unscented", "GaussNewtonInversion"]
 
 method_names = [
     ("Inversion()", "EKI"),
@@ -40,7 +57,7 @@ method_cases_key = Dict(
     "Inversion"            => "ces-eki-$(eki_scheduler_case)",
     "TransformInversion"   => "ces-etki-dmc",
     "Unscented"            => "ces-uki-dmc",
-    "GaussNewtonInversion" => "ces-iekf",
+    "GaussNewtonInversion" => "ces-iekf-const",
 )
 
 forcing_cases_key = Dict(
