@@ -76,18 +76,22 @@ end
 ###########################################################################
 
 first_post_fn = joinpath(data_save_directory, posterior_filename(cfg, valid_file_items[1]...))
-first_loaded  = JLD2.load(first_post_fn)
-if !haskey(first_loaded, "pushforward_output_samples")
-    error("Pushforward data not found in $(first_post_fn). Run pushforward_from_posterior.sbatch first.")
+n_params, n_pushforward_samples, n_output, n_forcing = JLD2.jldopen(first_post_fn, "r") do f
+    if !haskey(f, "pushforward_output_samples")
+        error("Pushforward data not found in $(first_post_fn). Run pushforward_from_posterior.sbatch first.")
+    end
+    (
+        length(vec(mean(f["posteriors_by_k"][1]))),
+        f["pushforward_n_samples"],
+        size(f["pushforward_output_samples"], 2),
+        has_forcing ? size(f["pushforward_forcing_samples"], 2) : 0,
+    )
 end
 
-n_params              = length(vec(mean(first_loaded["posteriors_by_k"][1])))
-n_pushforward_samples = first_loaded["pushforward_n_samples"]
-n_output              = size(first_loaded["pushforward_output_samples"], 2)
-n_forcing             = has_forcing ? size(first_loaded["pushforward_forcing_samples"], 2) : 0
-
+# Single-key load: avoids deserializing the (large) posterior/pushforward arrays
+# in every file just to read one scalar field.
 n_k = maximum(
-    maximum(JLD2.load(joinpath(data_save_directory, posterior_filename(cfg, N_ens, rng_idx)))["k_values"])
+    maximum(JLD2.load(joinpath(data_save_directory, posterior_filename(cfg, N_ens, rng_idx)), "k_values"))
     for (N_ens, rng_idx) in valid_file_items
 )
 
@@ -169,25 +173,42 @@ end
 for (N_ens, rng_idx) in valid_file_items
     post_fn = posterior_filename(cfg, N_ens, rng_idx)
     @info "loading case $(post_fn)"
-    loaded = JLD2.load(joinpath(data_save_directory, post_fn))
 
-    if !haskey(loaded, "pushforward_output_samples")
+    # Read only the keys this run actually needs — posteriors_by_k / forcing
+    # samples are large (esp. for l96_flux) and are irrelevant when
+    # SAVE_FULL_NC=false, so skip deserializing them entirely rather than
+    # loading the whole file and discarding most of it.
+    loaded = JLD2.jldopen(joinpath(data_save_directory, post_fn), "r") do f
+        if !haskey(f, "pushforward_output_samples")
+            return nothing
+        end
+        (
+            k_values        = f["k_values"],
+            pf_output       = f["pushforward_output_samples"],   # (n_samples, n_output, n_k_pos)
+            pf_k_values     = f["pushforward_k_values"],
+            posteriors_by_k = SAVE_FULL_NC ? f["posteriors_by_k"] : nothing,
+            truth_params    = SAVE_FULL_NC ? f["truth_params"] : nothing,
+            pf_forcing        = (SAVE_FULL_NC && has_forcing) ? f["pushforward_forcing_samples"] : nothing,
+            truth_forcing_vec = (SAVE_FULL_NC && has_forcing) ? f["truth_forcing"] : nothing,
+        )
+    end
+
+    if loaded === nothing
         @warn "Pushforward data missing for $(post_fn); skipping. Run pushforward_from_posterior.sbatch first."
         continue
     end
 
-    k_values        = loaded["k_values"]
-
-    pf_output   = loaded["pushforward_output_samples"]   # (n_samples, n_output, n_k_pos)
-    pf_k_values = loaded["pushforward_k_values"]
+    k_values        = loaded.k_values
+    pf_output       = loaded.pf_output
+    pf_k_values     = loaded.pf_k_values
 
     if SAVE_FULL_NC
-        posteriors_by_k = loaded["posteriors_by_k"]
-        truth_params    = loaded["truth_params"]
+        posteriors_by_k = loaded.posteriors_by_k
+        truth_params    = loaded.truth_params
 
         if has_forcing
-            pf_forcing        = loaded["pushforward_forcing_samples"]  # (n_samples, n_forcing, n_k_pos)
-            truth_forcing_vec = loaded["truth_forcing"]
+            pf_forcing        = loaded.pf_forcing
+            truth_forcing_vec = loaded.truth_forcing_vec
         end
 
         ekp_loaded     = JLD2.load(joinpath(data_save_directory, ekp_filename(cfg, N_ens, rng_idx)))
