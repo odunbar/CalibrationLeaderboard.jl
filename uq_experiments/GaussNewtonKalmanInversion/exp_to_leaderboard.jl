@@ -23,8 +23,8 @@
 using NCDatasets
 using JLD2
 using Statistics
-using LinearAlgebra
 
+include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "coverage_metrics.jl"))
 include("experiment_config.jl")
 
 ########################################################################
@@ -80,17 +80,11 @@ function main()
     fn1 = joinpath(output_dir, results_filename(cfg, valid_items[1]...))
     y, R_obs = JLD2.jldopen(f -> (f["y"], f["R"]), fn1, "r")
 
-    eig_R   = eigen(Symmetric(R_obs))
-    ord     = sortperm(eig_R.values; rev=true)
-    λ_all   = eig_R.values[ord]
-    V_all   = eig_R.vectors[:, ord]
-    cum_var = cumsum(λ_all) ./ sum(λ_all)
-    k_R     = something(findfirst(>=(R_variance_retain), cum_var), length(λ_all))
-    V_R     = V_all[:, 1:k_R]
-    λ_R     = λ_all[1:k_R]
-    yw      = V_R' * y ./ sqrt.(λ_R)
+    basis = whitened_pca_basis(R_obs, R_variance_retain)
+    k_R   = basis.k_R
+    yw    = whiten_vector(basis, y)
 
-    @info "R-whitened PCA: retaining $(k_R)/$(n_output) modes ($(round(100*cum_var[k_R]; digits=2))% variance)"
+    @info "R-whitened PCA: retaining $(k_R)/$(n_output) modes ($(round(100*basis.cum_var[k_R]; digits=2))% variance)"
 
     # ── Pre-allocate ────────────────────────────────────────────────────
     post_mean_arr       = fill(NaN, n_rng, n_ens, n_k, n_params)
@@ -116,32 +110,22 @@ function main()
             post_cov_arr[ri, ei, k, :, :]  = cov(ensemble, dims = 2)
 
             os = pf_output[:, :, ki]   # (n_pushforward_samples, n_output)
-            sw = Matrix((V_R' * Matrix(os')) ./ sqrt.(λ_R))'   # (n_pushforward_samples, k_R), R-whitened PCA
-            for (qi, qp) in enumerate(marginal_coverage_quantiles)
-                output_coverage_arr[ri, ei, k, qi] = mean(yw[d] <= quantile(sw[:, d], qp) for d in 1:k_R)
-            end
+            sw = whiten_samples(basis, os)   # (n_pushforward_samples, k_R), R-whitened PCA
+            output_coverage_arr[ri, ei, k, :] = marginal_coverage(sw, yw, marginal_coverage_quantiles)
         end
     end
 
     # ── Budget-to-target (smallest N_ens*k reaching calibrated coverage) ─
     output_budget_to_target = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
     output_iters_to_target  = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
-    for (si, c) in enumerate(budget_target_scalings)
-        tol = c .* sqrt.(marginal_coverage_quantiles .* (1 .- marginal_coverage_quantiles) ./ k_R)
-        for ri in 1:n_rng, ei in 1:n_ens, (qi, qp) in enumerate(marginal_coverage_quantiles)
-            for k in 1:n_k
-                s = output_coverage_arr[ri, ei, k, qi]
-                isnan(s) && continue
-                if abs(s - qp) <= tol[qi]
-                    output_budget_to_target[ri, ei, si, qi] = N_enss[ei] * k
-                    output_iters_to_target[ri, ei, si, qi]  = k
-                    break
-                end
-            end
-        end
+    for ri in 1:n_rng, ei in 1:n_ens
+        coverage_by_k = [output_coverage_arr[ri, ei, k, :] for k in 1:n_k]
+        budget, iters = budget_to_target(coverage_by_k, N_enss[ei], marginal_coverage_quantiles, budget_target_scalings, k_R)
+        output_budget_to_target[ri, ei, :, :] = budget
+        output_iters_to_target[ri, ei, :, :]  = iters
     end
 
-    output_coverage_description = "R-whitened PCA marginal coverage: fraction of whitened output dims d where ỹ[d] ≤ q_p of whitened ensemble-pushforward samples. Whitening: x̃_d = (Vᵀx)_d / √λ_d where R = VΛVᵀ. Retained $(k_R)/$(n_output) R-eigenmodes ($(round(100*cum_var[k_R]; digits=1))% variance, threshold $(R_variance_retain))."
+    output_coverage_description = "R-whitened PCA marginal coverage: fraction of whitened output dims d where ỹ[d] ≤ q_p of whitened ensemble-pushforward samples. Whitening: x̃_d = (Vᵀx)_d / √λ_d where R = VΛVᵀ. Retained $(k_R)/$(n_output) R-eigenmodes ($(round(100*basis.cum_var[k_R]; digits=1))% variance, threshold $(R_variance_retain))."
     output_budget_description   = "Budget (N_ens·k_iter) to first reach |S(q)−q| ≤ c·√(q(1−q)/N_y) per quantile q using R-whitened PCA coverage (N_y = $(k_R) effective whitened dims). NaN = not reached."
     output_iters_description    = "Iterations k_iter to first reach R-whitened PCA coverage target per quantile. NaN = not reached."
     ens_description             = "Number of ensemble members used to calibrate (post_mean/post_cov); output_coverage is instead computed from a fixed-size Gaussian resample of this ensemble (see pushforward_from_posterior_l*.jl)"

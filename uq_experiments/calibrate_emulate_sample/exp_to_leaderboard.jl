@@ -7,6 +7,7 @@ using CalibrateEmulateSample.ParameterDistributions
 using CalibrateEmulateSample.DataContainers
 using CalibrateEmulateSample.EnsembleKalmanProcesses
 
+include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "coverage_metrics.jl"))
 include("experiment_config.jl")
 
 # Allow EXPERIMENT env var to override the toggle in experiment_config.jl
@@ -122,17 +123,11 @@ R_obs = JLD2.load(prelim_file, "R")
 # compute coverage of the whitened truth ỹ = Vᵀy/√λ against the whitened
 # pushforward samples.
 
-eig_R   = eigen(Symmetric(R_obs))
-ord     = sortperm(eig_R.values; rev = true)
-λ_all   = eig_R.values[ord]
-V_all   = eig_R.vectors[:, ord]
-cum_var = cumsum(λ_all) ./ sum(λ_all)
-k_R     = something(findfirst(>=(R_variance_retain), cum_var), length(λ_all))
-V_R     = V_all[:, 1:k_R]
-λ_R     = λ_all[1:k_R]
-yw      = V_R' * y ./ sqrt.(λ_R)
+basis = whitened_pca_basis(R_obs, R_variance_retain)
+k_R   = basis.k_R
+yw    = whiten_vector(basis, y)
 
-@info "R-whitened PCA: retaining $(k_R)/$(n_output) modes ($(round(100*cum_var[k_R]; digits=2))% variance)"
+@info "R-whitened PCA: retaining $(k_R)/$(n_output) modes ($(round(100*basis.cum_var[k_R]; digits=2))% variance)"
 
 ###########################################################################
 #################### Pre-allocate arrays #################################
@@ -275,14 +270,10 @@ for (N_ens, rng_idx) in valid_file_items
                 output_plr_mahal_top_arr[i, j, k]      = sum(proj_o.^2 ./ λ_o)
                 output_plr_mahal_residual_arr[i, j, k] = (sum(o_diff.^2) - sum(proj_o.^2)) / a_o
             end
-            for (qi, qp) in enumerate(marginal_coverage_quantiles)
-                output_coverage_arr[i, j, k, qi] = mean(y .<= [quantile(os[:, d], qp) for d in 1:n_output])
-            end
+            output_coverage_arr[i, j, k, :] = marginal_coverage(os, y, marginal_coverage_quantiles)
         end
-        sw = Matrix((V_R' * Matrix(os')) ./ sqrt.(λ_R))'   # (n_pushforward_samples, k_R), R-whitened PCA
-        for (qi, qp) in enumerate(marginal_coverage_quantiles)
-            output_coverage_whitened_arr[i, j, k, qi] = mean(yw[d] <= quantile(sw[:, d], qp) for d in 1:k_R)
-        end
+        sw = whiten_samples(basis, os)   # (n_pushforward_samples, k_R), R-whitened PCA
+        output_coverage_whitened_arr[i, j, k, :] = marginal_coverage(sw, yw, marginal_coverage_quantiles)
 
         # ── Forcing-space metrics (L96 only) ─────────────────────────────
         if SAVE_FULL_NC && has_forcing
@@ -307,9 +298,7 @@ for (N_ens, rng_idx) in valid_file_items
                 forcing_plr_mahal_top_arr[i, j, k]      = sum(proj_f.^2 ./ λ_f)
                 forcing_plr_mahal_residual_arr[i, j, k] = (sum(f_diff.^2) - sum(proj_f.^2)) / a_f
             end
-            for (qi, qp) in enumerate(marginal_coverage_quantiles)
-                forcing_coverage_arr[i, j, k, qi] = mean(truth_forcing_vec .<= [quantile(fs[:, d], qp) for d in 1:n_forcing])
-            end
+            forcing_coverage_arr[i, j, k, :] = marginal_coverage(fs, truth_forcing_vec, marginal_coverage_quantiles)
         end
     end
 end
@@ -325,55 +314,31 @@ end
 if SAVE_FULL_NC
     output_budget_to_target = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
     output_iters_to_target  = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
-    for (si, c) in enumerate(budget_target_scalings)
-        tol = c .* sqrt.(marginal_coverage_quantiles .* (1 .- marginal_coverage_quantiles) ./ n_output)
-        for ri in 1:n_rng, ei in 1:n_ens, (qi, qp) in enumerate(marginal_coverage_quantiles)
-            for k in 1:n_k
-                s = output_coverage_arr[ri, ei, k, qi]
-                isnan(s) && continue
-                if abs(s - qp) <= tol[qi]
-                    output_budget_to_target[ri, ei, si, qi] = N_enss[ei] * k
-                    output_iters_to_target[ri, ei, si, qi]  = k
-                    break
-                end
-            end
-        end
+    for ri in 1:n_rng, ei in 1:n_ens
+        coverage_by_k = [output_coverage_arr[ri, ei, k, :] for k in 1:n_k]
+        budget, iters = budget_to_target(coverage_by_k, N_enss[ei], marginal_coverage_quantiles, budget_target_scalings, n_output)
+        output_budget_to_target[ri, ei, :, :] = budget
+        output_iters_to_target[ri, ei, :, :]  = iters
     end
 end
 
 output_budget_to_target_whitened = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
 output_iters_to_target_whitened  = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
-for (si, c) in enumerate(budget_target_scalings)
-    tol = c .* sqrt.(marginal_coverage_quantiles .* (1 .- marginal_coverage_quantiles) ./ k_R)
-    for ri in 1:n_rng, ei in 1:n_ens, (qi, qp) in enumerate(marginal_coverage_quantiles)
-        for k in 1:n_k
-            s = output_coverage_whitened_arr[ri, ei, k, qi]
-            isnan(s) && continue
-            if abs(s - qp) <= tol[qi]
-                output_budget_to_target_whitened[ri, ei, si, qi] = N_enss[ei] * k
-                output_iters_to_target_whitened[ri, ei, si, qi]  = k
-                break
-            end
-        end
-    end
+for ri in 1:n_rng, ei in 1:n_ens
+    coverage_by_k = [output_coverage_whitened_arr[ri, ei, k, :] for k in 1:n_k]
+    budget, iters = budget_to_target(coverage_by_k, N_enss[ei], marginal_coverage_quantiles, budget_target_scalings, k_R)
+    output_budget_to_target_whitened[ri, ei, :, :] = budget
+    output_iters_to_target_whitened[ri, ei, :, :]  = iters
 end
 
 if SAVE_FULL_NC && has_forcing
     forcing_budget_to_target = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
     forcing_iters_to_target  = fill(NaN, n_rng, n_ens, n_target_scalings, n_marginal_coverage_quantiles)
-    for (si, c) in enumerate(budget_target_scalings)
-        tol = c .* sqrt.(marginal_coverage_quantiles .* (1 .- marginal_coverage_quantiles) ./ n_forcing)
-        for ri in 1:n_rng, ei in 1:n_ens, (qi, qp) in enumerate(marginal_coverage_quantiles)
-            for k in 1:n_k
-                s = forcing_coverage_arr[ri, ei, k, qi]
-                isnan(s) && continue
-                if abs(s - qp) <= tol[qi]
-                    forcing_budget_to_target[ri, ei, si, qi] = N_enss[ei] * k
-                    forcing_iters_to_target[ri, ei, si, qi]  = k
-                    break
-                end
-            end
-        end
+    for ri in 1:n_rng, ei in 1:n_ens
+        coverage_by_k = [forcing_coverage_arr[ri, ei, k, :] for k in 1:n_k]
+        budget, iters = budget_to_target(coverage_by_k, N_enss[ei], marginal_coverage_quantiles, budget_target_scalings, n_forcing)
+        forcing_budget_to_target[ri, ei, :, :] = budget
+        forcing_iters_to_target[ri, ei, :, :]  = iters
     end
 end
 
@@ -560,7 +525,7 @@ ts_var_min.attrib["description"] = "Scaling c in α_c(q) = c·√(q(1−q)/N_y);
 ts_var_min[:] = budget_target_scalings
 
 output_coverage_v_min = defVar(ds_min, "output_coverage", Float64, ("random_seed", "ensemble_size", "k_iter", "coverage_quantile"); fillvalue=NaN)
-output_coverage_v_min.attrib["description"] = "R-whitened PCA marginal coverage: fraction of whitened output dims d where ỹ[d] ≤ q_p of whitened ensemble-pushforward samples. Whitening: x̃_d = (Vᵀx)_d / √λ_d where R = VΛVᵀ. Retained $(k_R)/$(n_output) R-eigenmodes ($(round(100*cum_var[k_R]; digits=1))% variance, threshold $(R_variance_retain))."
+output_coverage_v_min.attrib["description"] = "R-whitened PCA marginal coverage: fraction of whitened output dims d where ỹ[d] ≤ q_p of whitened ensemble-pushforward samples. Whitening: x̃_d = (Vᵀx)_d / √λ_d where R = VΛVᵀ. Retained $(k_R)/$(n_output) R-eigenmodes ($(round(100*basis.cum_var[k_R]; digits=1))% variance, threshold $(R_variance_retain))."
 output_coverage_v_min[:, :, :, :] = output_coverage_whitened_arr
 
 output_budget_v_min = defVar(ds_min, "output_budget_to_target", Float64, ("random_seed", "ensemble_size", "target_scaling", "coverage_quantile"); fillvalue=NaN)
