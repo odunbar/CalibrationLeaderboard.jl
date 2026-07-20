@@ -139,10 +139,19 @@ EXPERIMENT=l96_vec julia --project=. calibrate_l96.jl 5
 
 ## HPC (Caltech Resnick cluster, SLURM)
 
-Not yet set up for this method — see the `slurm-pipeline-handler` skill to
-add `hpc-variant/` sbatch/submit scripts, following the pattern in
-`uq_experiments/calibrate_emulate_sample/hpc-variant/` and
-`uq_experiments/GaussNewtonKalmanInversion/hpc-variant/`.
+See `hpc-variant/README.md` for sbatch/submit scripts. Same 3-stage pipeline
+(preliminaries → calibrate → pushforward → leaderboard) as
+`uq_experiments/GaussNewtonKalmanInversion/hpc-variant/`, since History
+Matching likewise has no separate emulate_sample stage.
+
+```bash
+cd hpc-variant
+bash submit_precompile.sh
+bash submit_l63.sh
+bash submit_l96_const.sh
+bash submit_l96_vec.sh
+bash submit_l96_flux.sh
+```
 
 ## Shared code
 
