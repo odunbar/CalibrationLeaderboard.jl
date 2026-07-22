@@ -48,6 +48,15 @@ include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "coverage_metrics
 # Both packages compute the same thing here; resolve the ambiguity explicitly.
 LinearAlgebra.ldiv!(cK::PDMats.PDMat, x::AbstractVecOrMat) = LinearAlgebra.ldiv!(cK.chol, x)
 
+# fit_wave_gps/predict_wave below parallelize their per-output-GP loops across
+# Julia threads (each GP is a fully independent fit/predict). Each individual
+# GP's own linear algebra is far too small (N_ens ~ 50-90) to benefit from
+# BLAS's own multithreading, so pin BLAS to 1 thread to avoid oversubscribing
+# on top of the outer Threads.@threads when multiple Julia threads are
+# available; leave it alone otherwise (no benefit to disabling BLAS threading
+# when there's no outer parallelism to trade it for).
+Threads.nthreads() > 1 && LinearAlgebra.BLAS.set_num_threads(1)
+
 ########################################################################
 ###############  Log-normal moment matching (const-force / L63)  ######
 ########################################################################
@@ -118,11 +127,11 @@ function fit_wave_gps(prob::HMProblem, theta_ens::AbstractMatrix, results::Abstr
     k_R_out = prob.output_basis.k_R
 
     gps = Vector{GaussianProcesses.GPE}(undef, k_R_out)
-    for j in 1:k_R_out
+    ll = log.(vec(std(Xfit, dims = 2)) .+ 1e-8)   # same for every j; hoisted out of the loop below
+    Threads.@threads for j in 1:k_R_out
         yj = Yfit[:, j]
         sy = std(yj)
         sy = sy > 0 ? sy : 1.0
-        ll = log.(vec(std(Xfit, dims = 2)) .+ 1e-8)
         kernel = GaussianProcesses.SEArd(ll, log(sy))
         gp = GaussianProcesses.GPE(Xfit, yj, GaussianProcesses.MeanZero(), kernel, -2.0)
         try
@@ -144,7 +153,7 @@ function predict_wave(prob::HMProblem, wave::WaveGPs, theta_batch::AbstractMatri
     m = size(Xp, 2)
     mu = zeros(m, k_R_out)
     var = zeros(m, k_R_out)
-    for j in 1:k_R_out
+    Threads.@threads for j in 1:k_R_out
         # Very small N_ens (esp. 1-D const-force theta) can drive unconstrained
         # GP hyperparameter MLE toward a near-singular training covariance,
         # which then fails at *prediction* time with a LAPACK error rather
@@ -180,18 +189,43 @@ implausibility_sq_whitened(mu::AbstractVector, y_whitened::AbstractVector, var::
 # should use output_basis.k_R degrees of freedom — the actual number of
 # whitened output dimensions implausibility is computed over, not the raw
 # output dimension).
+#
+# A candidate ruled out by an earlier wave can never come back (implausibility
+# is a logical AND across waves), so `predict_wave` is only ever called on
+# candidates still alive going into that wave, rather than on the full batch
+# every time — cost drops from O(waves * batch) GP predictions per candidate
+# batch to O(surviving candidates), which matters a lot once acceptance rate
+# has collapsed to near-zero after a couple of waves (see the "curse of
+# dimensionality" discussion in the top-level README). Once a batch is fully
+# ruled out, remaining waves are skipped entirely for it. Result is identical
+# to testing every wave against the full batch — only the compute spent on
+# already-dead candidates is saved.
 function is_nroy(prob::HMProblem, theta_batch::AbstractMatrix, waves::Vector{WaveGPs}, threshold::Real)
     m = size(theta_batch, 2)
-    nroy = trues(m)
-    isempty(waves) && return nroy
+    isempty(waves) && return trues(m)
+
+    active_idx = collect(1:m)
     for wave in waves
-        mu, var = predict_wave(prob, wave, theta_batch)
-        for i in 1:m
-            nroy[i] || continue
-            nroy[i] &= (implausibility_sq_whitened(mu[i, :], prob.y_whitened, var[i, :]) < threshold)
-        end
+        isempty(active_idx) && break
+        mu, var = predict_wave(prob, wave, theta_batch[:, active_idx])
+        survive = [implausibility_sq_whitened(mu[i, :], prob.y_whitened, var[i, :]) < threshold for i in 1:length(active_idx)]
+        active_idx = active_idx[survive]
     end
+
+    nroy = falses(m)
+    nroy[active_idx] .= true
     return nroy
+end
+
+# Exact one-sided Poisson/Garwood upper confidence bound on the acceptance
+# rate, given `k` acceptances out of `n` trials so far (`alpha` = tail
+# probability, so 1-alpha is the confidence level). k=0 reduces to the
+# familiar "rule of three" family (e.g. alpha=0.05 -> ~3/n). Used below to
+# decide, conservatively, when continuing a rejection-sampling sweep is
+# statistically futile.
+function poisson_rate_upper_bound(k::Int, n::Int, alpha::Real)
+    n == 0 && return Inf
+    return 0.5 * quantile(Chisq(2 * (k + 1)), 1 - alpha) / n
 end
 
 # prior_sampler(rng, n) -> D x n matrix of iid prior draws (in constrained
@@ -200,7 +234,20 @@ end
 # evaluates `is_nroy` on each batch, accumulates survivors until `n_wanted`
 # reached or `max_samples` exceeded. Returns (samples::Matrix (D x k),
 # ok::Bool); k == n_wanted iff ok, else k < n_wanted (whatever was found
-# before hitting max_samples).
+# before hitting max_samples, or before the early stop below triggered).
+#
+# Once dimension/waves have collapsed the acceptance rate to effectively
+# zero, exhausting the full `max_samples` budget can cost many wasted minutes
+# for a sweep that was always going to come up short (see the "curse of
+# dimensionality" discussion in the top-level README). After each batch, once
+# enough trials have accumulated for the estimate to be meaningful, compute a
+# very conservative (`early_stop_alpha` small) upper confidence bound on the
+# true acceptance rate from the acceptances seen so far; if even that
+# best-case rate applied to the remaining budget couldn't plausibly reach
+# `n_wanted`, stop now instead of burning through the rest of `max_samples`.
+# This changes only how quickly a doomed sweep gives up, not the eventual
+# outcome (still `k < n_wanted`, `ok = false`) nor the outcome of any sweep
+# that had a real chance of succeeding.
 function rejection_sample_nroy(
     prob::HMProblem,
     prior_sampler,
@@ -210,7 +257,9 @@ function rejection_sample_nroy(
     n_wanted::Int,
     max_samples::Int,
     batch_size::Int,
-    rng::AbstractRNG,
+    rng::AbstractRNG;
+    early_stop_alpha::Real = 1e-6,
+    early_stop_min_tried::Int = 5 * batch_size,
 )
     if isempty(waves)
         return prior_sampler(rng, n_wanted), true
@@ -223,6 +272,15 @@ function rejection_sample_nroy(
         n_tried += this_batch
         keep = is_nroy(prob, cand, waves, threshold)
         any(keep) && (accepted = hcat(accepted, cand[:, keep]))
+
+        if n_tried >= early_stop_min_tried
+            n_accepted = size(accepted, 2)
+            budget_remaining = max_samples - n_tried
+            upper_rate = poisson_rate_upper_bound(n_accepted, n_tried, early_stop_alpha)
+            if upper_rate * budget_remaining < n_wanted - n_accepted
+                break
+            end
+        end
     end
     if size(accepted, 2) >= n_wanted
         return accepted[:, 1:n_wanted], true
