@@ -39,6 +39,7 @@ using Distributions
 using PDMats
 
 include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "coverage_metrics.jl"))
+include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "prior_transforms.jl"))
 
 # GaussianProcesses.jl 0.12's `LinearAlgebra.ldiv!(cK::PDMat, x)` and PDMats.jl's
 # generic `ldiv!(A::AbstractPDMat, B::AbstractVecOrMat)` are mutually ambiguous
@@ -56,21 +57,6 @@ LinearAlgebra.ldiv!(cK::PDMats.PDMat, x::AbstractVecOrMat) = LinearAlgebra.ldiv!
 # available; leave it alone otherwise (no benefit to disabling BLAS threading
 # when there's no outer parallelism to trade it for).
 Threads.nthreads() > 1 && LinearAlgebra.BLAS.set_num_threads(1)
-
-########################################################################
-###############  Log-normal moment matching (const-force / L63)  ######
-########################################################################
-
-# Given the desired mean/std of X = exp(mu + sigma*Z), Z ~ N(0,1), returns
-# (mu, sigma). Reproduces the same constrained-space mean/std as
-# EnsembleKalmanProcesses.jl's `constrained_gaussian(name, mean, std, 0, Inf)`
-# bounded-below moment matching, without depending on EKP for it.
-function lognormal_params_from_moments(mean_x::Real, std_x::Real)
-    var_ratio = (std_x / mean_x)^2
-    sigma2 = log(1 + var_ratio)
-    mu = log(mean_x) - sigma2 / 2
-    return mu, sqrt(sigma2)
-end
 
 ########################################################################
 ###############  HMProblem: fixed-per-cell whitening setup  ############

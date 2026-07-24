@@ -49,6 +49,19 @@ whiten_vector(basis::WhitenedPCABasis, x::AbstractVector) = basis.V' * x ./ sqrt
 # X: n_samples x n_output -> n_samples x k_R
 whiten_samples(basis::WhitenedPCABasis, X::AbstractMatrix) = Matrix((basis.V' * Matrix(X')) ./ sqrt.(basis.λ))'
 
+# Exact inverses of whiten_vector/whiten_samples: reconstruct the retained
+# modes' contribution in the ORIGINAL space (discarded modes are treated as
+# exactly zero — the standard truncated-PCA reconstruction). Needed by
+# uq_experiments/BayesianOptimalExperimentalDesign, which (unlike the
+# whiten-only consumers above) must decode candidates sampled/optimized in
+# the truncated whitened space back to raw parameter space before evaluating
+# the forward model.
+# z: k_R vector -> n_output vector
+unwhiten_vector(basis::WhitenedPCABasis, z::AbstractVector) = basis.V * (sqrt.(basis.λ) .* z)
+
+# Z: n_samples x k_R -> n_samples x n_output
+unwhiten_samples(basis::WhitenedPCABasis, Z::AbstractMatrix) = Matrix((basis.V * (sqrt.(basis.λ) .* Matrix(Z')))')
+
 # whitened_samples: n_samples x k_R ; whitened_truth: k_R vector.
 # Returns marginal coverage fraction at each quantile in `quantile_probs`.
 function marginal_coverage(whitened_samples::AbstractMatrix, whitened_truth::AbstractVector, quantile_probs)
