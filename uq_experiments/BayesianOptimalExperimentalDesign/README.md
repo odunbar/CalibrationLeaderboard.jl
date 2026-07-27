@@ -139,11 +139,11 @@ EXPERIMENT=l96_vec julia --project=. calibrate_l96.jl 5
 
 ## HPC (Caltech Resnick cluster, SLURM)
 
-Not yet wired up for this method — run `slurm-pipeline-handler` to add the
-`hpc-variant/` sbatch/submit scripts, following the same 3-stage pipeline
+Wired up in `hpc-variant/`, following the same 3-stage pipeline
 (preliminaries → calibrate → pushforward → leaderboard) as
 `uq_experiments/HistoryMatching/hpc-variant/` and
-`uq_experiments/GaussNewtonKalmanInversion/hpc-variant/`.
+`uq_experiments/GaussNewtonKalmanInversion/hpc-variant/`. See
+`hpc-variant/README.md` for submission scripts and the full sbatch reference.
 
 ## Packages this method introduces to the repo
 
