@@ -41,12 +41,51 @@ method_key = "boed"
 #                           budget_to_target, since the paper's own
 #                           experiments also fix n0 = B.
 #    n_posterior_samples:   ST-MCMC population size |X'| drawn each iteration
-#                           (paper uses ~8092; defaulted lower here, matching
-#                           HistoryMatching's own already-established
-#                           n_posterior_samples=1000 local precedent, for
-#                           compute budget — bump if affordable).
+#                           (paper uses ~8092; defaulted MUCH lower here, 50,
+#                           for compute budget). TransitionalMCMC.jl's
+#                           tmcmc() evaluates the GP-based log-likelihood
+#                           roughly n_posterior_samples * (tmcmc_burnin +
+#                           tmcmc_thin) * 2 times PER tempering stage, via
+#                           Distributed.pmap — which does not actually
+#                           parallelize unless Julia was started with extra
+#                           worker processes (`-p N`/`addprocs()`), so this
+#                           cost is effectively serial (with real per-call
+#                           scheduling overhead) in a plain `julia
+#                           --project=.` run. Bump only if affordable; 1000
+#                           at tmcmc's own default burnin/thin (20/3) was
+#                           measured to make even a single N_ens=8 cell's
+#                           first iteration take many minutes and still not
+#                           finish.
+#    tmcmc_burnin/tmcmc_thin: passed directly to TransitionalMCMC.tmcmc's
+#                           per-particle Metropolis-Hastings mutation step
+#                           (library defaults are 20/3 — set much lower here
+#                           for the same reason as n_posterior_samples above).
 #    eig_optim_iters:       Optim.jl Fminbox(LBFGS()) iteration cap for the
-#                           joint-batch EIG optimization each iteration.
+#                           INNER LBFGS solve at each fixed barrier weight μ
+#                           (Fminbox's own "outer" barrier-shrinking loop is
+#                           separate — see eig_outer_iters).
+#    eig_outer_iters:       Fminbox's OUTER barrier-loop iteration cap
+#                           (Optim.jl's `outer_iterations` option). Left
+#                           unset, this defaults to Optim.jl's own 1000, and
+#                           since Fminbox's outer x/f convergence tolerances
+#                           also default to 0 (i.e. practically unreachable),
+#                           the outer loop's only realistic early-exit is its
+#                           outer_g_abstol=1e-8 projected-gradient tolerance —
+#                           quite tight for this EIG objective. Without an
+#                           explicit cap, a batch that doesn't quickly hit
+#                           that tolerance can silently run up to 1000 outer
+#                           rounds, each re-running the full eig_optim_iters
+#                           inner LBFGS solve — the dominant source of
+#                           `optimize_batch` looking hung. Set much lower
+#                           (20) since in practice a well-behaved batch
+#                           converges within a handful of outer barrier
+#                           updates (μ shrinks geometrically by mufactor=1e-3
+#                           each round); `fit_boed_gps`/`optimize_batch`'s
+#                           `converged`/`objective_evals` diagnostics + the
+#                           @warn emitted when this cap is hit tell you when
+#                           a batch is being cut off before genuine
+#                           convergence, so it can be raised deliberately if
+#                           that happens often.
 #    eig_bounds_std:        Fminbox box half-width for the candidate batch,
 #                           in prior-whitened-truncated standard-normal units
 #                           (keeps candidates within the GP's trust region).
@@ -101,8 +140,11 @@ function experiment_config(case::Symbol)
     n_repeats = 20
     common = (
         n_repeats = n_repeats,
-        n_posterior_samples = 1_000,
+        n_posterior_samples = 50,
+        tmcmc_burnin = 5,
+        tmcmc_thin = 1,
         eig_optim_iters = 200,
+        eig_outer_iters = 20,
         eig_bounds_std = 4.0,
         eig_jitter = 1e-6,
         batch_init_strategy = :posterior_subsample,

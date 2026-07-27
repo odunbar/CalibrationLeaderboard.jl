@@ -61,27 +61,38 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
     )
     k_R_prior = prob.prior_basis.k_R
 
+    # NOTE: the batch accumulator here must NOT be named `results` — `results`
+    # is also assigned in this function's outer scope (the cumulative dataset
+    # below), and Julia closures share (rather than shadow) an enclosing
+    # local of the same name, so reusing that name would silently clobber the
+    # cumulative dataset on every call.
     forward_eval_batch(theta_batch) = begin
-        results = zeros(size(theta_batch, 2), n_out)
-        for j in 1:size(theta_batch, 2)
-            results[j, :] = lorenz_forward(
+        M = size(theta_batch, 2)
+        batch_results = zeros(M, n_out)
+        for j in 1:M
+            t0 = time()
+            batch_results[j, :] = lorenz_forward(
                 EnsembleMemberConfig(theta_batch[:, j]),
                 x0 .+ ic_cov_sqrt * randn(rng, nx),
                 lorenz_cfg, obs_cfg,
             )
+            @info "forward_eval_batch: member $j/$M done" elapsed_s = round(time() - t0; digits = 2)
         end
-        return results
+        return batch_results
     end
 
     # Initial LHS design in the truncated whitened prior space,
     Z = lhs_standard_normal_sample(k_R_prior, N_ens, rng)
     # decoded to raw theta, forward-evaluated
     theta = from_prior_whitened(prob, Z)
-    results = forward_eval_batch(theta)
+    results = timed_stage(() -> forward_eval_batch(theta), "forward_eval_batch (iter 1, N_ens=$N_ens, rng_idx=$rng_idx)")
     # Fit the first GP
-    gps = fit_boed_gps(prob, Z, results)
+    gps = timed_stage(() -> fit_boed_gps(prob, Z, results), "fit_boed_gps (iter 1, rng_idx=$rng_idx)")
     # Use ST-MCMC (sequential parallel sampler for the posterior
-    X_post = run_tmcmc(prob, gps, cfg.n_posterior_samples, rng)
+    X_post = timed_stage(
+        () -> run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin),
+        "run_tmcmc (iter 1, rng_idx=$rng_idx)",
+    )
 
     gps_by_k = Dict{Int, BOEDGPs}(1 => gps)
     posteriors_by_k = Dict{Int, Matrix{Float64}}(1 => from_prior_whitened(prob, X_post))
@@ -95,21 +106,28 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
         X_cand0 = init_candidate_batch(X_post, N_ens, rng; strategy = cfg.batch_init_strategy)
 
         # Optimizes EIG at the posterior samples
-        X_cand = optimize_batch(
-            X_cand0, X_post, hyperparams, k_R_prior, N_ens;
-            bound_std = cfg.eig_bounds_std, iters = cfg.eig_optim_iters, jitter = cfg.eig_jitter,
+        X_cand = timed_stage(
+            () -> optimize_batch(
+                X_cand0, X_post, hyperparams, k_R_prior, N_ens;
+                bound_std = cfg.eig_bounds_std, iters = cfg.eig_optim_iters, outer_iters = cfg.eig_outer_iters,
+                jitter = cfg.eig_jitter,
+            ),
+            "optimize_batch (iter $k, rng_idx=$rng_idx)",
         )
         # decode and foward evaluate again
         theta_cand = from_prior_whitened(prob, X_cand)
-        results_cand = forward_eval_batch(theta_cand)
+        results_cand = timed_stage(() -> forward_eval_batch(theta_cand), "forward_eval_batch (iter $k, N_ens=$N_ens, rng_idx=$rng_idx)")
 
         Z = hcat(Z, X_cand)
         #  augment dataset, and refit GP
         results = vcat(results, results_cand)
-        gps = fit_boed_gps(prob, Z, results)
-        
+        gps = timed_stage(() -> fit_boed_gps(prob, Z, results), "fit_boed_gps (iter $k, rng_idx=$rng_idx)")
+
         # re-samples the ST-MCMC posterior, for the next iteration
-        X_post = run_tmcmc(prob, gps, cfg.n_posterior_samples, rng)
+        X_post = timed_stage(
+            () -> run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin),
+            "run_tmcmc (iter $k, rng_idx=$rng_idx)",
+        )
         gps_by_k[k] = gps
         posteriors_by_k[k] = from_prior_whitened(prob, X_post)
         n_iters_completed = k

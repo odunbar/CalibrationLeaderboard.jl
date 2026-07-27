@@ -66,6 +66,26 @@ LinearAlgebra.ldiv!(cK::PDMats.PDMat, x::AbstractVecOrMat) = LinearAlgebra.ldiv!
 Threads.nthreads() > 1 && LinearAlgebra.BLAS.set_num_threads(1)
 
 ########################################################################
+###############  Progress/timing diagnostics  ##########################
+########################################################################
+# calibrate_l63.jl/calibrate_l96.jl's per-iteration loop calls several
+# stages (forward-map evaluation, GP fitting, EIG optimization, ST-MCMC
+# sampling) that can each individually run for a long time with NO
+# built-in progress output, which from the outside looks identical to a
+# genuine hang. `timed_stage` wraps a stage in start/finish @info lines
+# (with elapsed wall-clock time) so it's visible which stage is actually
+# running; `fit_boed_gps`/`run_tmcmc`/`optimize_batch` below additionally
+# emit finer-grained progress WITHIN a stage (per-GP, per-loglik-call,
+# per-LBFGS-iteration respectively).
+function timed_stage(f::Function, label::AbstractString)
+    @info "GBOED: starting $label"
+    t0 = time()
+    result = f()
+    @info "GBOED: finished $label" elapsed_s = round(time() - t0; digits = 2)
+    return result
+end
+
+########################################################################
 ###############  Custom Matérn-7/2 ARD kernel  #########################
 ########################################################################
 # GaussianProcesses.jl's own `Matern(ν, ll, lσ)` constructor only supports
@@ -194,7 +214,10 @@ function fit_boed_gps(prob::BOEDProblem, Z::AbstractMatrix, results::AbstractMat
 
     gps = Vector{GaussianProcesses.GPE}(undef, k_R_out)
     ll0 = log.(vec(std(Z, dims = 2)) .+ 1e-8)   # same for every j; hoisted out of the loop below
+    N = size(Z, 2)
+    @info "fit_boed_gps: fitting $k_R_out GP(s) on N=$N cumulative points across $(Threads.nthreads()) thread(s)"
     Threads.@threads for j in 1:k_R_out
+        t0 = time()
         yj = Yfit[:, j]
         sy = std(yj)
         sy = sy > 0 ? sy : 1.0
@@ -206,6 +229,7 @@ function fit_boed_gps(prob::BOEDProblem, Z::AbstractMatrix, results::AbstractMat
             @warn "GP hyperparameter optimization failed for whitened output $j; keeping initial hyperparameters." exception = err
         end
         gps[j] = gp
+        @info "fit_boed_gps: output mode $j/$k_R_out fit done" thread = Threads.threadid() elapsed_s = round(time() - t0; digits = 2)
     end
     return BOEDGPs(gps)
 end
@@ -272,12 +296,38 @@ function boed_loglik(prob::BOEDProblem, gps::BOEDGPs, z::Real)
     boed_loglik(prob, gps, [z])
 end
 
-function run_tmcmc(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::AbstractRNG)
+# `burnin`/`thin` are exposed (rather than left at tmcmc's own defaults of
+# 20/3) because they directly multiply the per-tempering-stage cost: tmcmc
+# evaluates the GP-based log-likelihood roughly
+# n_samples * (burnin + thin) * 2 times per stage via Distributed.pmap, which
+# does NOT parallelize across Julia threads (Threads.@threads is a different
+# parallelism model) — without extra worker processes from `addprocs()`, this
+# is effectively serial with real per-call scheduling overhead. Empirically,
+# even n_samples=200 at the library's own defaults made a single run_tmcmc
+# call take many minutes; smaller burnin/thin (and a smaller n_samples, see
+# experiment_config.jl) are the cheap first lever before reaching for
+# addprocs() or a from-scratch sampler.
+function run_tmcmc(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::AbstractRNG; burnin::Int = 5, thin::Int = 1)
     k_R_prior = prob.prior_basis.k_R
-    loglik(z) = boed_loglik(prob, gps, z)
+    # TransitionalMCMC.jl's own per-tempering-stage "β_i = ..." @info lines are
+    # the only built-in progress signal — WITHIN a stage (the
+    # n_samples*(burnin+thin)*2 loglik calls described above) there is none,
+    # so a long-running stage looks indistinguishable from a hang. This
+    # counter reports progress within a stage too.
+    n_calls = Ref(0)
+    t_start = time()
+    report_every = max(50, n_samples)
+    function loglik(z)
+        n_calls[] += 1
+        if n_calls[] % report_every == 0
+            @info "run_tmcmc: $(n_calls[]) log-likelihood evaluations so far" elapsed_s = round(time() - t_start; digits = 2)
+        end
+        return boed_loglik(prob, gps, z)
+    end
     logprior(z) = sum(logpdf.(Normal(), z))
     priorRnd(n) = Matrix(lhs_standard_normal_sample(k_R_prior, n, rng)')   # n x k_R_prior, per tmcmc's row-major convention
-    samps, _log_ev = TransitionalMCMC.tmcmc(loglik, logprior, priorRnd, n_samples)
+    samps, _log_ev = TransitionalMCMC.tmcmc(loglik, logprior, priorRnd, n_samples, burnin, thin)
+    @info "run_tmcmc: done" total_loglik_evals = n_calls[] elapsed_s = round(time() - t_start; digits = 2)
     return Matrix(reshape(samps, n_samples, k_R_prior)')   # back to k_R_prior x n_samples
 end
 
@@ -378,14 +428,39 @@ end
 # Z-space, keeping candidates within the GP's trust region.
 function optimize_batch(
     X_init::AbstractMatrix, X_post::AbstractMatrix, hyperparams_by_dim, k_R_prior::Int, B::Int;
-    bound_std::Real, iters::Int, jitter::Real,
+    bound_std::Real, iters::Int, outer_iters::Int = 20, jitter::Real,
 )
     lo = fill(-bound_std, k_R_prior * B)
     hi = fill(bound_std, k_R_prior * B)
-    neg_eig(x) = -eig_objective(x, X_post, hyperparams_by_dim, k_R_prior, B; jitter = jitter)
+    # Fminbox(LBFGS())'s own progress is otherwise invisible from the outside
+    # until it returns — count objective evaluations (ForwardDiff calls this
+    # many times per gradient, on top of Fminbox's outer barrier iterations)
+    # so a slow-converging optimization is visibly still working, not hung.
+    n_calls = Ref(0)
+    t0 = time()
+    function neg_eig(x)
+        n_calls[] += 1
+        if n_calls[] % 100 == 0
+            @info "optimize_batch: $(n_calls[]) EIG objective evaluations so far" elapsed_s = round(time() - t0; digits = 2)
+        end
+        return -eig_objective(x, X_post, hyperparams_by_dim, k_R_prior, B; jitter = jitter)
+    end
+    # `iterations` caps EACH inner LBFGS solve at a fixed barrier weight;
+    # `outer_iterations` caps Fminbox's OWN barrier-shrinking loop, which
+    # Optim.jl otherwise defaults to 1000 with an outer_g_abstol=1e-8
+    # convergence tolerance that's tight enough for this EIG objective to
+    # frequently not be met quickly — silently multiplying total work by up
+    # to 1000x. Capped much lower here; see experiment_config.jl's
+    # eig_outer_iters comment.
     res = Optim.optimize(
         neg_eig, lo, hi, vec(X_init), Fminbox(LBFGS()),
-        Optim.Options(iterations = iters); autodiff = :forward,
+        Optim.Options(iterations = iters, outer_iterations = outer_iters); autodiff = :forward,
     )
+    converged = Optim.converged(res)
+    outer_rounds = Optim.iterations(res)
+    @info "optimize_batch: done" converged objective_evals = n_calls[] outer_rounds elapsed_s = round(time() - t0; digits = 2)
+    if !converged && outer_rounds >= outer_iters
+        @warn "optimize_batch: Fminbox's outer barrier loop hit its outer_iterations cap ($outer_iters) without converging — the returned EIG-optimized batch is likely under-optimized. Consider raising cfg.eig_outer_iters if this happens often." objective_evals = n_calls[] elapsed_s = round(time() - t0; digits = 2)
+    end
     return reshape(Optim.minimizer(res), k_R_prior, B)
 end
