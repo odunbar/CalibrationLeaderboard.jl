@@ -50,3 +50,14 @@ echo "  <STAGE2_NAME> job ID: ${STAGE2_JID}"
 # always run (e.g. diagnostics that process partial results).
 
 echo "=== Done. Monitor with: squeue -u \$USER ==="
+
+# Manual resubmission reference — one commented line per stage after the
+# primary per-cell array stage (pushforward/diagnostics/leaderboard for UQ;
+# leaderboard for OPT). Lets you resubmit just that one downstream stage
+# later — e.g. after fixing a corrupted output file — without reconstructing
+# its --export flags from scratch. <yyyy-mm-dd> is a literal placeholder:
+# substitute the real date when you actually run one of these.
+
+# sbatch --parsable -A esm --job-name="<STAGE2_SHORT>_${LABEL}" --export=ALL,EXPERIMENT=<EXPERIMENT_VAL>,RUN_DATE=<yyyy-mm-dd> <STAGE2_SBATCH>
+
+# sbatch -A esm --job-name="<STAGE3_SHORT>_${LABEL}" --export=ALL,EXPERIMENT=<EXPERIMENT_VAL>,RUN_DATE=<yyyy-mm-dd> <STAGE3_SBATCH>

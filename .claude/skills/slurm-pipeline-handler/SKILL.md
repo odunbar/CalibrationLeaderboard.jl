@@ -204,7 +204,8 @@ from the partial-fix anti-pattern above). See `references/pipeline-uq.md` /
 4. If run scripts share expensive setup, apply the **serial pre-stage
    pattern** above — check for the write-only-gated partial fix too.
 5. Create `submit_l63.sh`, `submit_l96_const.sh`, `submit_l96_vec.sh`, `submit_l96_flux.sh`
-   — each chains stages with `afterok` between array jobs and `afterany` before the leaderboard.
+   — each chains stages with `afterok` between array jobs and `afterany` before the leaderboard,
+   and ends with the manual-resubmission reference block (see below).
 6. Create `precompile.sbatch` + `submit_precompile.sh` from templates.
 7. Write or update `README.md` using `assets/README-skeleton.md`.
 
@@ -225,7 +226,8 @@ SLURM to a new OPT method:
    `leaderboard.sbatch` runs `run_to_leaderboard.jl` after.
 5. If run scripts share expensive setup, apply the **serial pre-stage
    pattern** above.
-6. `submit_l96_<case>.sh`: same pattern with `EXPERIMENT=l96_const|l96_vec|l96_flux`.
+6. `submit_l96_<case>.sh`: same pattern with `EXPERIMENT=l96_const|l96_vec|l96_flux`,
+   ending with the manual-resubmission reference block (see below).
 
 See `references/pipeline-opt.md` for the dependency graph and stage table.
 
@@ -297,6 +299,20 @@ sbatch --array=1-1 --export=ALL,SCRIPT=run_l63_<method>.jl,EXPERIMENT=l63 run_ar
 # UQ:
 sbatch --array=1-1 --export=ALL,SCRIPT=calibrate_l63.jl calibrate_array.sbatch
 ```
+
+## Manual-resubmission reference block
+
+Every `submit_l*.sh` ends with a trailing block of commented-out `sbatch`
+commands, one per stage after the primary per-cell array stage (pushforward +
+leaderboard for UQ; leaderboard for OPT) — see `assets/submit.sh`. These
+aren't executed; they're a copy-paste reference for resubmitting just one
+downstream stage later — e.g. after fixing a corrupted/truncated output file
+found only after the pipeline finished — without reconstructing that stage's
+`--export=ALL,...` flags from scratch. Use `<yyyy-mm-dd>` as a literal
+placeholder for the date; the person running it substitutes the real
+`RUN_DATE`/`CALIBRATE_DATE`. Worked examples: every `submit_l*.sh` in
+`uq_experiments/GaussNewtonKalmanInversion/hpc-variant/` and
+`uq_experiments/BayesianOptimalExperimentalDesign/hpc-variant/`.
 
 ## Template files (in assets/)
 

@@ -77,6 +77,9 @@ Array upper bound: `length(N_ens_sizes) * n_repeats`
 
 EXP_ID is optional; it suffix-labels SLURM job names (e.g. `calib_l63_run2`).
 All four cases can submit simultaneously — output paths are case-specific.
+Each script ends with a manual-resubmission reference block (commented
+`sbatch` lines for pushforward + leaderboard) — see SKILL.md's
+"Manual-resubmission reference block".
 
 ## Serial (local) invocation
 

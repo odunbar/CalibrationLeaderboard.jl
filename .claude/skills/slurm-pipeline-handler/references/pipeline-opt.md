@@ -65,6 +65,9 @@ Array upper bound: `length(N_ens_sizes) * n_repeats`
 | `submit_l96_flux.sh [EXP_ID]` | same with EXPERIMENT=l96_flux |
 
 (Omit the `preliminaries` step for methods that have no shared expensive setup.)
+Each script ends with a manual-resubmission reference block (a commented
+`sbatch` line for leaderboard) — see SKILL.md's "Manual-resubmission
+reference block".
 
 ## Prerequisites before adding SLURM to an OPT experiment
 
