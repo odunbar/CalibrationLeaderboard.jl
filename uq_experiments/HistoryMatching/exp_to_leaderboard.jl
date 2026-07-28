@@ -55,10 +55,20 @@ function main()
     retain_var = cfg.retain_var
 
     # ── Locate valid cells (calibrate + pushforward both completed) ────
+    # A cell's JLD2 file can exist but be truncated/corrupt (e.g. a calibrate
+    # array task killed mid-JLD2.save by a SLURM time/mem limit) — isfile(fn)
+    # alone can't detect that, and jldopen throws InvalidDataException
+    # ("Did not find a Superblock") on such a file. Treat that as no
+    # pushforward for this cell rather than aborting the whole leaderboard run.
     valid_items = Tuple{Int, Int}[]
     for (N_ens, rng_idx) in tasks
         fn = joinpath(output_dir, results_filename(cfg, N_ens, rng_idx))
-        has_pushforward = isfile(fn) && JLD2.jldopen(f -> haskey(f, "pushforward_output_samples"), fn, "r")
+        has_pushforward = try
+            isfile(fn) && JLD2.jldopen(f -> haskey(f, "pushforward_output_samples"), fn, "r")
+        catch e
+            @warn "Corrupt or unreadable JLD2 file, treating as no pushforward" file = fn exception = e
+            false
+        end
         has_pushforward && push!(valid_items, (N_ens, rng_idx))
     end
     isempty(valid_items) && error("No cells with pushforward output found in $(output_dir). Run calibrate + pushforward first.")
