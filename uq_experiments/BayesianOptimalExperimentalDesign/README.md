@@ -7,9 +7,11 @@ comparison of traditional and non-traditional approaches"*
 ([arXiv:2508.13071](https://arxiv.org/abs/2508.13071)).
 
 An iterative scheme: at each iteration a Gaussian Process surrogate (via
-[GaussianProcesses.jl](https://github.com/STOR-i/GaussianProcesses.jl), a
-hand-written Matérn-7/2 ARD kernel — see "Matérn-7/2 kernel" below) is fit on
-the *cumulative* set of forward-model input/output pairs seen so far;
+[GaussianProcesses.jl](https://github.com/STOR-i/GaussianProcesses.jl), the
+library's built-in `SEArd` squared-exponential ARD kernel — matching
+HistoryMatching's own kernel choice, rather than the paper's fixed-smoothness
+Matérn-7/2) is fit on the *cumulative* set of forward-model input/output pairs
+seen so far;
 [TransitionalMCMC.jl](https://github.com/AnderGray/TransitionalMCMC.jl) (an
 ST-MCMC/SMC sampler implementing Ching & Chen's 2007 Transitional MCMC — the
 paper's own cited ST-MCMC reference) draws approximate posterior samples from
@@ -85,18 +87,19 @@ stays identical to every other UQ method's leaderboard convention with zero
 changes to `common/uq_metrics/coverage_metrics.jl`'s `budget_to_target` — not
 a literal transcription of the paper's own single-final-budget framing.
 
-## Matérn-7/2 kernel
+## SE-ARD kernel
 
-The paper fixes the GP kernel's smoothness at ν=3.5 (=7/2).
-`GaussianProcesses.jl`'s own `Matern(ν, ll, lσ)` constructor only supports
-ν ∈ {1/2, 3/2, 5/2}, so `boed_core.jl` hand-writes a `Mat72Ard <:
-GaussianProcesses.MaternARD` kernel type (closed form:
-`k(r) = σ²(1 + √7r + 14r²/5 + 7√7r³/15)·exp(-√7r)`), slotting into the
-library's existing ARD chain-rule machinery the same way its own built-in
-`Mat52Ard` does. A second, standalone Matérn-7/2 kernel-matrix builder
-(`matern72_cov_matrix`) is used only inside the EIG objective, deliberately
-decoupled from `GaussianProcesses.jl`'s internals so its `ForwardDiff`
-compatibility doesn't depend on library internals not designed for autodiff.
+The paper fixes the GP kernel's smoothness at ν=3.5 (Matérn-7/2); this
+implementation instead uses `GaussianProcesses.jl`'s built-in `SEArd`
+(squared-exponential ARD) kernel, matching HistoryMatching's own kernel
+choice (`history_matching_core.jl`'s `fit_wave_gps`) rather than
+transcribing the paper's fixed smoothness — a deliberate departure, traded
+for consistency with the rest of this repo's GP-based methods and the
+library's own well-tested implementation. A second, standalone SE-ARD
+kernel-matrix builder (`se_cov_matrix`) is used only inside the EIG
+objective, deliberately decoupled from `GaussianProcesses.jl`'s internals so
+its `ForwardDiff` compatibility doesn't depend on library internals not
+designed for autodiff.
 
 ## One-time setup
 

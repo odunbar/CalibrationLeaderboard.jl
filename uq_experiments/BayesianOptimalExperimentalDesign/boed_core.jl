@@ -35,9 +35,12 @@
 #     whitened space (see `from_prior_whitened` below and
 #     common/uq_metrics/coverage_metrics.jl's `unwhiten_samples`).
 #
-# GP fitting uses raw GaussianProcesses.jl (GPE), with a hand-written
-# Matérn-7/2 ARD kernel (ν = 3.5, the paper's fixed smoothness — not one of
-# GaussianProcesses.jl's three built-in Matérn types, 1/2/3/2/5/2).
+# GP fitting uses raw GaussianProcesses.jl (GPE) with the library's built-in
+# `SEArd` (squared-exponential ARD) kernel — matching HistoryMatching's own
+# kernel choice (history_matching_core.jl's `fit_wave_gps`), rather than the
+# paper's own fixed-smoothness Matérn-7/2 (dropped in favor of consistency
+# with the rest of this repo's GP-based methods and the library's own
+# battle-tested, ForwardDiff-friendly implementation).
 
 using GaussianProcesses
 using LinearAlgebra
@@ -84,46 +87,6 @@ function timed_stage(f::Function, label::AbstractString)
     @info "GBOED: finished $label" elapsed_s = round(time() - t0; digits = 2)
     return result
 end
-
-########################################################################
-###############  Custom Matérn-7/2 ARD kernel  #########################
-########################################################################
-# GaussianProcesses.jl's own `Matern(ν, ll, lσ)` constructor only supports
-# ν ∈ {1/2, 3/2, 5/2} (throws ArgumentError otherwise) — ν = 3.5 (= 7/2, the
-# paper's fixed smoothness) must be hand-written. Slots into the existing
-# `GaussianProcesses.MaternARD` abstract type (gets the ARD chain-rule glue,
-# `dKij_dθp`, for free), mirroring the library's own `Mat52Ard` exactly:
-#
-#   k(r) = σ²(1 + √7·r + 14r²/5 + 7√7·r³/15)·exp(-√7·r)
-#
-# `dk_dll`'s formula below was derived by hand (symbolic differentiation of
-# k(r) w.r.t. a log-length-scale parameter, following the exact same
-# derivation steps that reproduce Mat52Ard's documented
-# `dk_dll = 5/3·σ²·wdiffp·(1+s)·exp(-s)` as a consistency check) and
-# independently verified against Mat52Ard's known-correct result before use
-# here.
-mutable struct Mat72Ard{T <: Real} <: GaussianProcesses.MaternARD
-    iℓ2::Vector{T}    # inverse squared length scales, one per input dim
-    σ2::T             # signal variance τ²
-    priors::Array
-end
-Mat72Ard(ll::Vector{T}, lσ::T) where {T} = Mat72Ard{T}(exp.(-2 .* ll), exp(2 * lσ), [])
-
-function GaussianProcesses.set_params!(mat::Mat72Ard, hyp::AbstractVector)
-    length(hyp) == GaussianProcesses.num_params(mat) ||
-        throw(ArgumentError("Mat72Ard kernel has $(GaussianProcesses.num_params(mat)) parameters, received $(length(hyp))."))
-    @views @. mat.iℓ2 = exp(-2 * hyp[1:(end - 1)])
-    mat.σ2 = exp(2 * hyp[end])
-end
-GaussianProcesses.get_params(mat::Mat72Ard) = [-log.(mat.iℓ2) / 2; log(mat.σ2) / 2]
-GaussianProcesses.get_param_names(mat::Mat72Ard) = [GaussianProcesses.get_param_names(mat.iℓ2, :ll); :lσ]
-GaussianProcesses.num_params(mat::Mat72Ard) = length(mat.iℓ2) + 1
-
-GaussianProcesses.cov(mat::Mat72Ard, r::Number) =
-    (s = sqrt(7) * r; mat.σ2 * (1 + s + (2 / 5) * s^2 + (1 / 15) * s^3) * exp(-s))
-
-GaussianProcesses.dk_dll(mat::Mat72Ard, r::Real, wdiffp::Real) =
-    (s = sqrt(7) * r; (7 / 15) * mat.σ2 * wdiffp * (3 + 3 * s + s^2) * exp(-s))
 
 ########################################################################
 ###############  BOEDProblem: fixed-per-cell whitening setup  ##########
@@ -208,12 +171,41 @@ end
 
 # Z: k_R_prior x N (prior-whitened + truncated inputs, CUMULATIVE across all
 # iterations so far) ; results: N x n_out (raw outputs, CUMULATIVE).
-function fit_boed_gps(prob::BOEDProblem, Z::AbstractMatrix, results::AbstractMatrix)
+#
+# Bounds below are all RELATIVE to each GP's own data-driven initial guess
+# (ll0's per-dimension empirical std of Z, `sy`'s empirical std of the
+# whitened response) rather than a hardcoded absolute magnitude — this keeps
+# a single set of defaults sane across every experiment case despite Z/Yfit's
+# natural scale differing between them (Z is prior-whitened, ~unit variance;
+# Yfit is R-whitened, whose scale depends on the signal-to-observation-noise
+# ratio, which varies by case). Left fully unconstrained (the previous
+# behavior), `optimize!`'s unconstrained MLE can drive the length scale
+# arbitrarily short and/or the noise arbitrarily close to zero when fitting
+# on very few cumulative points (small N_ens, early iterations) — both
+# produce a near-singular training covariance and hence spuriously
+# overconfident (near-zero-variance) predictions in extrapolated regions.
+# That overconfidence is exactly what `boed_loglik` (used by ST-MCMC) can
+# latch onto: unlike HistoryMatching's implausibility (a pure threshold
+# statistic), `boed_loglik`'s -0.5*log(2π·v) term rewards low predictive
+# variance regardless of whether the mean is actually close to the
+# observation, and ST-MCMC's importance-weighted resampling can then
+# collapse the whole particle population onto that one spurious point.
+# Bounding length scale and noise away from their degenerate extremes removes
+# the mechanism that creates that false confidence in the first place.
+function fit_boed_gps(
+    prob::BOEDProblem, Z::AbstractMatrix, results::AbstractMatrix;
+    gp_lengthscale_log10_range::Real = 2.0,
+    gp_signal_std_log10_range::Real = 2.0,
+    gp_min_noise_std_frac::Real = 1e-3,
+    gp_max_noise_std_frac::Real = 1.0,
+)
     Yfit = whiten_samples(prob.output_basis, results)   # N x k_R_out
     k_R_out = prob.output_basis.k_R
 
     gps = Vector{GaussianProcesses.GPE}(undef, k_R_out)
     ll0 = log.(vec(std(Z, dims = 2)) .+ 1e-8)   # same for every j; hoisted out of the loop below
+    ll_lo = ll0 .- gp_lengthscale_log10_range * log(10)
+    ll_hi = ll0 .+ gp_lengthscale_log10_range * log(10)
     N = size(Z, 2)
     @info "fit_boed_gps: fitting $k_R_out GP(s) on N=$N cumulative points across $(Threads.nthreads()) thread(s)"
     Threads.@threads for j in 1:k_R_out
@@ -221,10 +213,24 @@ function fit_boed_gps(prob::BOEDProblem, Z::AbstractMatrix, results::AbstractMat
         yj = Yfit[:, j]
         sy = std(yj)
         sy = sy > 0 ? sy : 1.0
-        kernel = Mat72Ard(ll0, log(sy))
-        gp = GaussianProcesses.GPE(Z, yj, GaussianProcesses.MeanZero(), kernel, -2.0)
+        lsy = log(sy)
+
+        # Kernel params, per SEArd.get_params, are [ll (d-vector); lσ (scalar)].
+        kernbounds = (
+            vcat(ll_lo, lsy - gp_signal_std_log10_range * log(10)),
+            vcat(ll_hi, lsy + gp_signal_std_log10_range * log(10)),
+        )
+        noise_lo = log(gp_min_noise_std_frac) + lsy
+        noise_hi = log(gp_max_noise_std_frac) + lsy
+        noisebounds = (noise_lo, noise_hi)
+
+        kernel = GaussianProcesses.SEArd(ll0, lsy)
+        # Centered exactly at the noise bounds' midpoint (rather than a fixed
+        # -2.0) so the starting point is always strictly interior to
+        # noisebounds regardless of sy's scale — Fminbox requires that.
+        gp = GaussianProcesses.GPE(Z, yj, GaussianProcesses.MeanZero(), kernel, (noise_lo + noise_hi) / 2)
         try
-            GaussianProcesses.optimize!(gp)
+            GaussianProcesses.optimize!(gp; kernbounds = kernbounds, noisebounds = noisebounds)
         catch err
             @warn "GP hyperparameter optimization failed for whitened output $j; keeping initial hyperparameters." exception = err
         end
@@ -332,14 +338,14 @@ function run_tmcmc(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::Abstrac
 end
 
 ########################################################################
-###############  Standalone, ForwardDiff-safe Matérn-7/2 kernel  #######
+###############  Standalone, ForwardDiff-safe SE-ARD kernel  ###########
 ########################################################################
 # Deliberately decoupled from GaussianProcesses.jl's own kernel-evaluation
-# internals (Mat72Ard above) — that library's AD-compatibility for a
-# ForwardDiff-driven optimization objective is unverified and shouldn't be
-# relied on for the EIG gradient below. Used ONLY inside `eig_objective`,
-# with the GP's currently-fitted hyperparameters held fixed (plain Float64
-# constants, not part of the optimization).
+# internals — that library's AD-compatibility for a ForwardDiff-driven
+# optimization objective is unverified and shouldn't be relied on for the EIG
+# gradient below. Used ONLY inside `eig_objective`, with the GP's
+# currently-fitted hyperparameters held fixed (plain Float64 constants, not
+# part of the optimization).
 
 # X1: d x M1, X2: d x M2, iℓ2: d-vector of inverse squared length scales ->
 # M1 x M2 matrix of the ARD-weighted squared distance Σ_k iℓ2[k]·(X1[k,i]-X2[k,j])².
@@ -357,17 +363,16 @@ function ard_sqdist(X1::AbstractMatrix, X2::AbstractMatrix, iℓ2::AbstractVecto
     return d2
 end
 
-# eps_r2 avoids the ForwardDiff NaN-gradient pitfall at r=0: every diagonal
-# entry of a self-covariance matrix has r ≡ 0 (and d(r²)/dx ≡ 0 there too),
-# so the naive sqrt(0)-chain-rule (which involves 1/(2·0)) yields NaN even
-# though the true derivative of r itself is well-defined off-diagonal only;
-# a tiny floor keeps every entry (on- and off-diagonal) smoothly
-# differentiable without materially changing the covariance values.
-function matern72_cov_matrix(X1::AbstractMatrix, X2::AbstractMatrix, iℓ2::AbstractVector, τ2::Real; eps_r2::Real = 1e-12)
+# k(x,x') = τ²·exp(-d²/2), matching GaussianProcesses.jl's own SEArd
+# convention (`cov(se, r) = se.σ2*exp(-r/2)` with `r` already the ARD-weighted
+# SQUARED distance). Unlike the Matérn family, SE's covariance is a smooth
+# function of d² directly (no square root anywhere in the formula), so —
+# unlike the Matérn-7/2 version this replaces — no epsilon floor is needed to
+# keep ForwardDiff's gradient well-defined at d²=0 (every diagonal entry of a
+# self-covariance matrix).
+function se_cov_matrix(X1::AbstractMatrix, X2::AbstractMatrix, iℓ2::AbstractVector, τ2::Real)
     d2 = ard_sqdist(X1, X2, iℓ2)
-    r = sqrt.(d2 .+ eps_r2)
-    s = sqrt(7) .* r
-    return τ2 .* (1 .+ s .+ (2 / 5) .* s .^ 2 .+ (1 / 15) .* s .^ 3) .* exp.(-s)
+    return τ2 .* exp.(-0.5 .* d2)
 end
 
 ########################################################################
@@ -395,9 +400,9 @@ function eig_objective(
     X_cand = reshape(x_cand_flat, k_R_prior, B)
     total = zero(eltype(x_cand_flat))
     for (iℓ2, τ2) in hyperparams_by_dim
-        K_pp = matern72_cov_matrix(X_post, X_post, iℓ2, τ2)
-        K_pc = matern72_cov_matrix(X_post, X_cand, iℓ2, τ2)
-        K_cc = matern72_cov_matrix(X_cand, X_cand, iℓ2, τ2) + jitter * τ2 * I
+        K_pp = se_cov_matrix(X_post, X_post, iℓ2, τ2)
+        K_pc = se_cov_matrix(X_post, X_cand, iℓ2, τ2)
+        K_cc = se_cov_matrix(X_cand, X_cand, iℓ2, τ2) + jitter * τ2 * I
         Sigma_post = Symmetric(K_pp - K_pc * (K_cc \ K_pc'))
         logdet_pp = logdet(cholesky(Symmetric(K_pp) + jitter * τ2 * I))
         logdet_post = logdet(cholesky(Sigma_post + jitter * τ2 * I))
