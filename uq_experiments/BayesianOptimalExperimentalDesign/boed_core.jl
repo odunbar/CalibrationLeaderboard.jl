@@ -15,8 +15,8 @@
 #           cited ST-MCMC reference).
 #        b. Jointly optimize a whole candidate batch X_cand (size = N_ens) to
 #           maximize the closed-form EIG (paper Eq. 8) against X', via
-#           Optim.jl's Fminbox(LBFGS()) + ForwardDiff autodiff, holding the
-#           GP's currently-fitted hyperparameters fixed.
+#           Optim.jl's Fminbox(LBFGS()) + Zygote reverse-mode autodiff,
+#           holding the GP's currently-fitted hyperparameters fixed.
 #        c. Forward-evaluate the optimized batch, augment the CUMULATIVE
 #           training set (unlike HistoryMatching, which fits one GP per wave
 #           on that wave's ensemble alone, GBOED refits on the full growing
@@ -49,7 +49,7 @@ using Random
 using Distributions
 using PDMats
 using Optim
-using ForwardDiff
+using Zygote
 using TransitionalMCMC
 
 include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "coverage_metrics.jl"))
@@ -338,29 +338,34 @@ function run_tmcmc(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::Abstrac
 end
 
 ########################################################################
-###############  Standalone, ForwardDiff-safe SE-ARD kernel  ###########
+###############  Standalone, AD-safe SE-ARD kernel  #####################
 ########################################################################
 # Deliberately decoupled from GaussianProcesses.jl's own kernel-evaluation
-# internals — that library's AD-compatibility for a ForwardDiff-driven
-# optimization objective is unverified and shouldn't be relied on for the EIG
-# gradient below. Used ONLY inside `eig_objective`, with the GP's
-# currently-fitted hyperparameters held fixed (plain Float64 constants, not
-# part of the optimization).
+# internals — that library's AD-compatibility for the EIG optimization's
+# gradient is unverified and shouldn't be relied on. Used ONLY inside
+# `eig_objective`, with the GP's currently-fitted hyperparameters held fixed
+# (plain Float64 constants, not part of the optimization).
 
 # X1: d x M1, X2: d x M2, iℓ2: d-vector of inverse squared length scales ->
 # M1 x M2 matrix of the ARD-weighted squared distance Σ_k iℓ2[k]·(X1[k,i]-X2[k,j])².
+#
+# Written via the expanded-norm identity (‖a-b‖²_w = ‖a‖²_w - 2⟨a,b⟩_w + ‖b‖²_w)
+# and BLAS matmuls rather than the mathematically-equivalent element-wise
+# double loop this replaces: the loop version mutated a preallocated `d2`
+# in-place, which Zygote (this file's autodiff for `eig_objective`, replacing
+# ForwardDiff — see that function's comment) cannot differentiate through.
+# Rewriting as pure broadcasting + `sum`/`*` sidesteps that entirely, and is
+# also markedly faster in plain Float64 (BLAS-backed matmul vs. a scalar
+# Julia loop). Clamped at 0 to guard against ~-1e-15 cancellation noise on
+# the diagonal (X1 === X2 columns), which would otherwise make
+# `se_cov_matrix`'s exp(-0.5*d2) evaluate at a a hair above 1 instead of
+# exactly 1 — harmless in exact arithmetic but avoided for cleanliness.
 function ard_sqdist(X1::AbstractMatrix, X2::AbstractMatrix, iℓ2::AbstractVector)
-    M1 = size(X1, 2)
-    M2 = size(X2, 2)
-    d2 = zeros(promote_type(eltype(X1), eltype(X2)), M1, M2)
-    @inbounds for jj in 1:M2, ii in 1:M1
-        s = zero(eltype(d2))
-        for kk in eachindex(iℓ2)
-            s += iℓ2[kk] * (X1[kk, ii] - X2[kk, jj])^2
-        end
-        d2[ii, jj] = s
-    end
-    return d2
+    X1w = X1 .* iℓ2
+    n1 = vec(sum(X1w .* X1; dims = 1))       # M1, weighted squared norm of each X1 column
+    n2 = vec(sum(X2 .* (iℓ2 .* X2); dims = 1)) # M2, weighted squared norm of each X2 column
+    cross = X1w' * X2                          # M1 x M2, Σ_k iℓ2[k]·X1[k,i]·X2[k,j]
+    return max.(n1 .+ n2' .- 2 .* cross, 0)
 end
 
 # k(x,x') = τ²·exp(-d²/2), matching GaussianProcesses.jl's own SEArd
@@ -393,6 +398,26 @@ extract_hyperparams(gps::BOEDGPs) = [(copy(gp.kernel.iℓ2), gp.kernel.σ2) for 
 # dimension (paper Section 2), EIG is computed per dimension and averaged
 # (not summed) so the objective's scale doesn't grow with k_R_out — an
 # aggregation choice not pinned down by the paper, kept trivially swappable.
+#
+# A Schur-complement/matrix-determinant-lemma reformulation was tried here —
+# rewriting logdet(Σ') via the joint covariance [K_pp K_pc; K_pc' K_cc] so
+# only a B x B (rather than n_post x n_post) matrix needs factoring — and
+# REJECTED after measuring it directly under ForwardDiff (see below for why
+# the gradient is now computed with Zygote instead, but this reasoning
+# predates and is independent of that switch): (1) no actual speedup (~1.0x
+# on the dominated gradient cost; profiling showed Julia's generic
+# `Cholesky{Float64} \ Matrix{Dual}` dispatch promotes the WHOLE factor to
+# Dual before solving, rather than doing a cheap mixed-type solve against the
+# fixed Float64 factor, so the assumed saving never materialized); (2) it
+# requires inverting K_pp directly, and K_pp — built from n_post ST-MCMC
+# posterior samples via a smooth SE kernel — is frequently near-singular in
+# practice (measured eigenvalues down to ~1e-15 for realistic posterior
+# samples/length scales), making that inversion numerically unsound in
+# exactly the regime this method already struggles with — a concern that
+# applies regardless of autodiff backend. The original K_cc-based form below
+# never inverts the large matrix (only takes ITS logdet via Cholesky, which
+# stays well-behaved with a small jitter even when near-singular), which is
+# why it's the right form to keep despite being the more expensive one.
 function eig_objective(
     x_cand_flat::AbstractVector, X_post::AbstractMatrix,
     hyperparams_by_dim, k_R_prior::Int, B::Int; jitter::Real = 1e-6,
@@ -427,10 +452,28 @@ function init_candidate_batch(X_post::AbstractMatrix, B::Int, rng::AbstractRNG; 
 end
 
 # Jointly optimizes the WHOLE candidate batch (all B points at once, paper
-# Algorithm 2) via Optim.jl's Fminbox(LBFGS()) with ForwardDiff-computed
-# gradients, maximizing eig_objective (implemented here as minimizing its
-# negation). Box bounds are ±bound_std standard deviations in the whitened
-# Z-space, keeping candidates within the GP's trust region.
+# Algorithm 2) via Optim.jl's Fminbox(LBFGS()), maximizing eig_objective
+# (implemented here as minimizing its negation). Box bounds are ±bound_std
+# standard deviations in the whitened Z-space, keeping candidates within the
+# GP's trust region.
+#
+# Gradient is computed with Zygote (reverse-mode), not ForwardDiff
+# (forward-mode) or ReverseDiff. ForwardDiff was the original choice but is
+# the wrong complexity class here: its cost scales with the NUMBER OF INPUTS
+# being differentiated (k_R_prior*B, e.g. 5*90=450 — one dual "lane" group
+# per chunk of ~12 inputs, so dozens of forward passes per gradient), whereas
+# a reverse-mode gradient of a scalar objective costs ~1 forward pass
+# regardless of input count. ReverseDiff was tried next and rejected: it has
+# no built-in adjoint for `cholesky`/`logdet`/`\`, so it traces the raw
+# elementwise LAPACK-style algorithm operating on `TrackedReal`s, building an
+# O(n_post^3 + B^3)-sized instruction tape PER gradient call (thousands to
+# ~10^6 tracked nodes for this problem's n_post/B) — this is what exhausted
+# memory. Zygote sidesteps this entirely: via ChainRules it has efficient,
+# constant-size adjoint rules for `cholesky`, `logdet`, and `\` built in, so
+# differentiating through `eig_objective` never touches their internals. The
+# one piece that DID need rewriting for Zygote is `ard_sqdist` (see its own
+# comment) — Zygote can't differentiate through in-place mutation, which the
+# original loop-based version relied on.
 function optimize_batch(
     X_init::AbstractMatrix, X_post::AbstractMatrix, hyperparams_by_dim, k_R_prior::Int, B::Int;
     bound_std::Real, iters::Int, outer_iters::Int = 20, jitter::Real,
@@ -438,8 +481,8 @@ function optimize_batch(
     lo = fill(-bound_std, k_R_prior * B)
     hi = fill(bound_std, k_R_prior * B)
     # Fminbox(LBFGS())'s own progress is otherwise invisible from the outside
-    # until it returns — count objective evaluations (ForwardDiff calls this
-    # many times per gradient, on top of Fminbox's outer barrier iterations)
+    # until it returns — count objective evaluations (each triggers one
+    # Zygote reverse-mode pass, on top of Fminbox's outer barrier iterations)
     # so a slow-converging optimization is visibly still working, not hung.
     n_calls = Ref(0)
     t0 = time()
@@ -450,6 +493,10 @@ function optimize_batch(
         end
         return -eig_objective(x, X_post, hyperparams_by_dim, k_R_prior, B; jitter = jitter)
     end
+    function neg_eig_grad!(G::AbstractVector, x::AbstractVector)
+        G .= only(Zygote.gradient(neg_eig, x))
+        return G
+    end
     # `iterations` caps EACH inner LBFGS solve at a fixed barrier weight;
     # `outer_iterations` caps Fminbox's OWN barrier-shrinking loop, which
     # Optim.jl otherwise defaults to 1000 with an outer_g_abstol=1e-8
@@ -457,9 +504,16 @@ function optimize_batch(
     # frequently not be met quickly — silently multiplying total work by up
     # to 1000x. Capped much lower here; see experiment_config.jl's
     # eig_outer_iters comment.
+    #
+    # Built as an explicit OnceDifferentiable (rather than passing `neg_eig`
+    # straight to `Optim.optimize` with an `autodiff = ...` keyword) because
+    # that keyword only recognizes `:finite`/`:forward` in the installed
+    # Optim version — plugging in an arbitrary gradient function (here,
+    # Zygote's) requires constructing the differentiable object by hand.
+    od = Optim.OnceDifferentiable(neg_eig, neg_eig_grad!, vec(X_init))
     res = Optim.optimize(
-        neg_eig, lo, hi, vec(X_init), Fminbox(LBFGS()),
-        Optim.Options(iterations = iters, outer_iterations = outer_iters); autodiff = :forward,
+        od, lo, hi, vec(X_init), Fminbox(LBFGS()),
+        Optim.Options(iterations = iters, outer_iterations = outer_iters),
     )
     converged = Optim.converged(res)
     outer_rounds = Optim.iterations(res)
