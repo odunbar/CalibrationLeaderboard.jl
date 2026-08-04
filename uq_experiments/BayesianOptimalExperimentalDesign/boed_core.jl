@@ -1,46 +1,5 @@
-# BayesianOptimalExperimentalDesign — shared GBOED (Goal-Oriented Bayesian
-# Optimal Experimental Design) core.
-#
-# Included (via an @__DIR__-relative path) by calibrate_l63.jl and
-# calibrate_l96.jl. Implements Algorithm 2 ("Goal-Oriented Bayesian Optimal
-# Experimental Design (GBOED) with batched acquisitions") from Holthuijzen,
-# Chakraborty, Krath, Catanach (2026), "Surrogate-based Bayesian calibration
-# methods for chaotic systems" (arXiv:2508.13071):
-#
-#   1. Initial LHS design in the truncated, whitened prior space; forward-
-#      evaluate it; fit one independent GP per whitened output mode.
-#   2. Repeat for cfg.max_iters - 1 acquisition batches:
-#        a. Draw approximate posterior samples X' from the current GP fit via
-#           ST-MCMC (TransitionalMCMC.jl's `tmcmc`, matching the paper's own
-#           cited ST-MCMC reference).
-#        b. Jointly optimize a whole candidate batch X_cand (size = N_ens) to
-#           maximize the closed-form EIG (paper Eq. 8) against X', via
-#           Optim.jl's Fminbox(LBFGS()) + Zygote reverse-mode autodiff,
-#           holding the GP's currently-fitted hyperparameters fixed.
-#        c. Forward-evaluate the optimized batch, augment the CUMULATIVE
-#           training set (unlike HistoryMatching, which fits one GP per wave
-#           on that wave's ensemble alone, GBOED refits on the full growing
-#           dataset every iteration), and refit.
-#
-# Like history_matching_core.jl, both the GP's input and output spaces are
-# truncated-whitened before fitting, reusing
-# common/uq_metrics/coverage_metrics.jl's WhitenedPCABasis machinery:
-#   - Output space is whitened against the OBSERVATION covariance R — fixed
-#     for the whole cell.
-#   - Input space is whitened against the PRIOR covariance — likewise fixed
-#     for the whole cell. Unlike HistoryMatching (which only ever whitens
-#     forward), GBOED must also DECODE (unwhiten) optimized/sampled
-#     candidates back to raw parameter space before calling the forward map,
-#     since the LHS/TMCMC/EIG steps operate entirely in the truncated
-#     whitened space (see `from_prior_whitened` below and
-#     common/uq_metrics/coverage_metrics.jl's `unwhiten_samples`).
-#
-# GP fitting uses raw GaussianProcesses.jl (GPE) with the library's built-in
-# `SEArd` (squared-exponential ARD) kernel — matching HistoryMatching's own
-# kernel choice (history_matching_core.jl's `fit_wave_gps`), rather than the
-# paper's own fixed-smoothness Matérn-7/2 (dropped in favor of consistency
-# with the rest of this repo's GP-based methods and the library's own
-# battle-tested, ForwardDiff-friendly implementation).
+# BayesianOptimalExperimentalDesign — shared GBOED core, implementing Algorithm 2 of
+# Holthuijzen et al. (2026, arXiv:2508.13071). Included by calibrate_l63.jl/calibrate_l96.jl.
 
 using GaussianProcesses
 using LinearAlgebra
@@ -55,31 +14,17 @@ using TransitionalMCMC
 include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "coverage_metrics.jl"))
 include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "prior_transforms.jl"))
 
-# Same GaussianProcesses.jl 0.12 / PDMats.jl `ldiv!` ambiguity fix
-# history_matching_core.jl needs — this method uses the identical
-# GaussianProcesses+PDMats combo, so the same silent-failure mode applies:
-# without this, `GaussianProcesses.optimize!`'s internal solves throw a
-# MethodError that the try/catch below would otherwise swallow, leaving every
-# GP at its un-optimized initial hyperparameters.
+# Fixes a GaussianProcesses.jl 0.12 / PDMats.jl `ldiv!` ambiguity that would
+# otherwise silently leave every GP at its un-optimized initial hyperparameters.
 LinearAlgebra.ldiv!(cK::PDMats.PDMat, x::AbstractVecOrMat) = LinearAlgebra.ldiv!(cK.chol, x)
 
-# fit_boed_gps/boed_loglik below parallelize their per-output-GP loops across
-# Julia threads; pin BLAS to 1 thread to avoid oversubscribing on top of that
-# when multiple Julia threads are available (same reasoning as HistoryMatching).
+# Avoids oversubscribing BLAS threads on top of fit_boed_gps/boed_loglik's own Julia-thread parallelism.
 Threads.nthreads() > 1 && LinearAlgebra.BLAS.set_num_threads(1)
 
 ########################################################################
 ###############  Progress/timing diagnostics  ##########################
 ########################################################################
-# calibrate_l63.jl/calibrate_l96.jl's per-iteration loop calls several
-# stages (forward-map evaluation, GP fitting, EIG optimization, ST-MCMC
-# sampling) that can each individually run for a long time with NO
-# built-in progress output, which from the outside looks identical to a
-# genuine hang. `timed_stage` wraps a stage in start/finish @info lines
-# (with elapsed wall-clock time) so it's visible which stage is actually
-# running; `fit_boed_gps`/`run_tmcmc`/`optimize_batch` below additionally
-# emit finer-grained progress WITHIN a stage (per-GP, per-loglik-call,
-# per-LBFGS-iteration respectively).
+# Wraps a long-running stage in start/finish @info timing so it's visible from the outside that it's still working, not hung.
 function timed_stage(f::Function, label::AbstractString)
     @info "GBOED: starting $label"
     t0 = time()
@@ -91,13 +36,7 @@ end
 ########################################################################
 ###############  BOEDProblem: fixed-per-cell whitening setup  ##########
 ########################################################################
-# Everything about a (N_ens, rng_idx) cell's whitening that does NOT change
-# iteration-to-iteration — built once (before the acquisition loop) from the
-# prior and observation covariances, exactly like HistoryMatching's
-# HMProblem. Unlike HMProblem, this also carries `forward_transform` (the
-# inverse of `inverse_transform`), since GBOED must decode LHS/TMCMC/EIG-
-# optimized candidates in whitened space back to raw θ before calling the
-# forward map — HistoryMatching never needs to go in that direction.
+# Fixed per-cell whitening setup built once before the acquisition loop; also carries `forward_transform` to decode candidates back to raw θ.
 struct BOEDProblem
     output_basis::WhitenedPCABasis   # R-based output whitening + truncation
     y_whitened::Vector{Float64}      # observation, whitened into output_basis's coords
@@ -125,12 +64,7 @@ function to_prior_whitened(prob::BOEDProblem, theta_batch::AbstractMatrix)
     return whiten_samples(prob.prior_basis, Matrix(u'))'
 end
 
-# Z: k_R_prior x M (prior-whitened + truncated) -> D x M (raw/constrained).
-# Exact inverse of to_prior_whitened up to the truncation's information loss
-# (discarded prior-whitened modes are reconstructed at exactly zero, i.e.
-# held at the prior mean) — needed because GBOED, unlike History Matching,
-# samples/optimizes candidates directly in the whitened space and must decode
-# them before evaluating the (raw-parameter-space) forward map.
+# Inverse of to_prior_whitened (discarded modes reconstruct at the prior mean); decodes whitened candidates before the forward map.
 function from_prior_whitened(prob::BOEDProblem, Z::AbstractMatrix)
     u = unwhiten_samples(prob.prior_basis, Matrix(Z'))'   # D x M, in "prior-native" space
     theta_native = u .+ prob.prior_mean
@@ -140,13 +74,7 @@ end
 ########################################################################
 ###############  LHS in the truncated whitened space  ##################
 ########################################################################
-# Since PCA-whitening makes the retained coordinates' marginal prior EXACTLY
-# standard normal (a property of Gaussian marginals, independent of
-# truncation), one primitive serves both the initial LHS design (step 1) and
-# the ST-MCMC prior sampler (`sample_fT` below) — this is
-# history_matching_core.jl's `lhs_prior_sample` with the mean-shift/
-# correlate/constraint-transform steps stripped, since whitening already IS
-# that transform.
+# PCA-whitened coordinates are exactly standard normal, so this one sampler serves both the initial LHS design and the ST-MCMC prior sampler.
 function lhs_standard_normal_sample(k::Int, N::Int, rng::AbstractRNG)
     Z = zeros(k, N)
     for d in 1:k
@@ -161,37 +89,13 @@ end
 ########################################################################
 ###############  BOEDGPs: the cumulative-dataset GP fit  ################
 ########################################################################
-# Unlike HistoryMatching's WaveGPs (one independent GP set per wave, never
-# refit on later data), BOEDGPs is refit on the FULL cumulative dataset every
-# iteration (paper Algorithm 2, step "Refit GP hyperparameters using the
-# updated dataset D").
+# Refit on the full cumulative dataset every iteration, unlike HistoryMatching's per-wave WaveGPs.
 struct BOEDGPs
     gps::Vector{GaussianProcesses.GPE}   # one per whitened + truncated output mode
 end
 
-# Z: k_R_prior x N (prior-whitened + truncated inputs, CUMULATIVE across all
-# iterations so far) ; results: N x n_out (raw outputs, CUMULATIVE).
-#
-# Bounds below are all RELATIVE to each GP's own data-driven initial guess
-# (ll0's per-dimension empirical std of Z, `sy`'s empirical std of the
-# whitened response) rather than a hardcoded absolute magnitude — this keeps
-# a single set of defaults sane across every experiment case despite Z/Yfit's
-# natural scale differing between them (Z is prior-whitened, ~unit variance;
-# Yfit is R-whitened, whose scale depends on the signal-to-observation-noise
-# ratio, which varies by case). Left fully unconstrained (the previous
-# behavior), `optimize!`'s unconstrained MLE can drive the length scale
-# arbitrarily short and/or the noise arbitrarily close to zero when fitting
-# on very few cumulative points (small N_ens, early iterations) — both
-# produce a near-singular training covariance and hence spuriously
-# overconfident (near-zero-variance) predictions in extrapolated regions.
-# That overconfidence is exactly what `boed_loglik` (used by ST-MCMC) can
-# latch onto: unlike HistoryMatching's implausibility (a pure threshold
-# statistic), `boed_loglik`'s -0.5*log(2π·v) term rewards low predictive
-# variance regardless of whether the mean is actually close to the
-# observation, and ST-MCMC's importance-weighted resampling can then
-# collapse the whole particle population onto that one spurious point.
-# Bounding length scale and noise away from their degenerate extremes removes
-# the mechanism that creates that false confidence in the first place.
+# Z: k_R_prior x N (cumulative prior-whitened inputs); results: N x n_out (cumulative raw outputs).
+# Kernel/noise bounds are relative to each GP's own data-driven scale, avoiding degenerate near-zero-noise fits ST-MCMC's resampling can collapse onto.
 function fit_boed_gps(
     prob::BOEDProblem, Z::AbstractMatrix, results::AbstractMatrix;
     gp_lengthscale_log10_range::Real = 2.0,
@@ -225,9 +129,7 @@ function fit_boed_gps(
         noisebounds = (noise_lo, noise_hi)
 
         kernel = GaussianProcesses.SEArd(ll0, lsy)
-        # Centered exactly at the noise bounds' midpoint (rather than a fixed
-        # -2.0) so the starting point is always strictly interior to
-        # noisebounds regardless of sy's scale — Fminbox requires that.
+        # Centered at the noise bounds' midpoint so the start is always strictly interior, as Fminbox requires.
         gp = GaussianProcesses.GPE(Z, yj, GaussianProcesses.MeanZero(), kernel, (noise_lo + noise_hi) / 2)
         try
             GaussianProcesses.optimize!(gp; kernbounds = kernbounds, noisebounds = noisebounds)
@@ -240,9 +142,7 @@ function fit_boed_gps(
     return BOEDGPs(gps)
 end
 
-# z: k_R_prior vector (a single candidate, in prior-whitened+truncated space)
-# -> (mu::Vector, var::Vector), both length k_R_out, in output_basis's
-# whitened coordinates.
+# z (single candidate) -> (mu, var), both length k_R_out, in output_basis's whitened coordinates.
 function predict_boed(gps::BOEDGPs, z::AbstractVector)
     Zmat = reshape(z, :, 1)
     k_R_out = length(gps.gps)
@@ -264,14 +164,9 @@ end
 ########################################################################
 ###############  ST-MCMC posterior sampling (TransitionalMCMC.jl)  #####
 ########################################################################
-# Paper Eq. 5: p(y_obs | θ, GP(D)) = MVN(y_obs; μ_GP(θ), Γ_GP(θ) + Γ_obs). In
-# the R-whitened output space Γ_obs ≈ I (same simplification
-# history_matching_core.jl's implausibility metric uses), so the per-output-
-# mode variance is `1 + GP-predictive-variance`. Unlike HistoryMatching's
-# implausibility (a pure threshold statistic, so it drops the normalizing
-# log(2π·v) term), TMCMC needs a properly normalized (unnormalized-up-to-a-
-# constant is fine, but internally consistent) log-density to target via
-# tempering, so the full Gaussian log-density is required here.
+# Paper Eq. 5's GP-marginal log-likelihood (Γ_obs≈I in the whitened output
+# space); keeps the normalizing log(2π·v) term since ST-MCMC needs a properly
+# normalized density, unlike HistoryMatching's pure-threshold implausibility.
 function boed_loglik(prob::BOEDProblem, gps::BOEDGPs, z::AbstractVector)
     mu, var = predict_boed(gps, z)
     ll = 0.0
@@ -282,44 +177,16 @@ function boed_loglik(prob::BOEDProblem, gps::BOEDGPs, z::AbstractVector)
     return ll
 end
 
-# Draws `n_samples` approximate posterior samples in the prior-whitened +
-# truncated space via TransitionalMCMC.jl's `tmcmc` (Ching & Chen 2007
-# Transitional MCMC — the paper's cited "ST-MCMC"). NOTE: `tmcmc`'s own
-# internal convention is samples-as-ROWS (an Nsamples x k_R_prior matrix, the
-# opposite of this file's own columns-as-samples convention used everywhere
-# else) — verified directly against the installed package's source
-# (TransitionalMCMC/src/tmcmc.jl), not just its README. Transpose at the
-# boundary so callers of `run_tmcmc` see the usual k_R_prior x n_samples
-# shape.
-#
-# When k_R_prior == 1 (a genuinely 1-D case, e.g. l96_const's single-parameter
-# prior, or an aggressively truncated multi-D one), TransitionalMCMC.jl's own
-# `metropolis_hastings_simple` (src/mcmc.jl) deliberately special-cases
-# dims==1 and mutates a flat vector of scalars rather than length-1 vectors —
-# confirmed directly against its source, not inferred — so `loglik`/`logprior`
-# below must accept a bare `Real` as well as an `AbstractVector`.
+# Accepts a bare Real too: TransitionalMCMC.jl's dims==1 code path (used when k_R_prior==1) mutates scalars rather than length-1 vectors.
 function boed_loglik(prob::BOEDProblem, gps::BOEDGPs, z::Real)
     boed_loglik(prob, gps, [z])
 end
 
-# `burnin`/`thin` are exposed (rather than left at tmcmc's own defaults of
-# 20/3) because they directly multiply the per-tempering-stage cost: tmcmc
-# evaluates the GP-based log-likelihood roughly
-# n_samples * (burnin + thin) * 2 times per stage via Distributed.pmap, which
-# does NOT parallelize across Julia threads (Threads.@threads is a different
-# parallelism model) — without extra worker processes from `addprocs()`, this
-# is effectively serial with real per-call scheduling overhead. Empirically,
-# even n_samples=200 at the library's own defaults made a single run_tmcmc
-# call take many minutes; smaller burnin/thin (and a smaller n_samples, see
-# experiment_config.jl) are the cheap first lever before reaching for
-# addprocs() or a from-scratch sampler.
+# Draws posterior samples via TransitionalMCMC.jl's `tmcmc`; transposes at the boundary since tmcmc uses samples-as-rows internally.
+# `burnin`/`thin` are exposed below tmcmc's own 20/3 defaults since they directly multiply its (effectively serial) per-stage cost.
 function run_tmcmc(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::AbstractRNG; burnin::Int = 5, thin::Int = 1)
     k_R_prior = prob.prior_basis.k_R
-    # TransitionalMCMC.jl's own per-tempering-stage "β_i = ..." @info lines are
-    # the only built-in progress signal — WITHIN a stage (the
-    # n_samples*(burnin+thin)*2 loglik calls described above) there is none,
-    # so a long-running stage looks indistinguishable from a hang. This
-    # counter reports progress within a stage too.
+    # Reports progress within a tempering stage, since tmcmc's own logging is only per-stage.
     n_calls = Ref(0)
     t_start = time()
     report_every = max(50, n_samples)
@@ -340,26 +207,10 @@ end
 ########################################################################
 ###############  Standalone, AD-safe SE-ARD kernel  #####################
 ########################################################################
-# Deliberately decoupled from GaussianProcesses.jl's own kernel-evaluation
-# internals — that library's AD-compatibility for the EIG optimization's
-# gradient is unverified and shouldn't be relied on. Used ONLY inside
-# `eig_objective`, with the GP's currently-fitted hyperparameters held fixed
-# (plain Float64 constants, not part of the optimization).
+# Decoupled from GaussianProcesses.jl's own kernel internals (unverified AD-compatibility); uses the GP's fitted hyperparameters as fixed constants.
 
-# X1: d x M1, X2: d x M2, iℓ2: d-vector of inverse squared length scales ->
-# M1 x M2 matrix of the ARD-weighted squared distance Σ_k iℓ2[k]·(X1[k,i]-X2[k,j])².
-#
-# Written via the expanded-norm identity (‖a-b‖²_w = ‖a‖²_w - 2⟨a,b⟩_w + ‖b‖²_w)
-# and BLAS matmuls rather than the mathematically-equivalent element-wise
-# double loop this replaces: the loop version mutated a preallocated `d2`
-# in-place, which Zygote (this file's autodiff for `eig_objective`, replacing
-# ForwardDiff — see that function's comment) cannot differentiate through.
-# Rewriting as pure broadcasting + `sum`/`*` sidesteps that entirely, and is
-# also markedly faster in plain Float64 (BLAS-backed matmul vs. a scalar
-# Julia loop). Clamped at 0 to guard against ~-1e-15 cancellation noise on
-# the diagonal (X1 === X2 columns), which would otherwise make
-# `se_cov_matrix`'s exp(-0.5*d2) evaluate at a a hair above 1 instead of
-# exactly 1 — harmless in exact arithmetic but avoided for cleanliness.
+# X1: d x M1, X2: d x M2, iℓ2: inverse squared length scales -> M1 x M2 ARD-weighted squared distance.
+# Computed via the expanded-norm identity + BLAS matmuls (Zygote can't differentiate the mutating-loop form); clamped at 0 against diagonal cancellation noise.
 function ard_sqdist(X1::AbstractMatrix, X2::AbstractMatrix, iℓ2::AbstractVector)
     X1w = X1 .* iℓ2
     n1 = vec(sum(X1w .* X1; dims = 1))       # M1, weighted squared norm of each X1 column
@@ -368,13 +219,7 @@ function ard_sqdist(X1::AbstractMatrix, X2::AbstractMatrix, iℓ2::AbstractVecto
     return max.(n1 .+ n2' .- 2 .* cross, 0)
 end
 
-# k(x,x') = τ²·exp(-d²/2), matching GaussianProcesses.jl's own SEArd
-# convention (`cov(se, r) = se.σ2*exp(-r/2)` with `r` already the ARD-weighted
-# SQUARED distance). Unlike the Matérn family, SE's covariance is a smooth
-# function of d² directly (no square root anywhere in the formula), so —
-# unlike the Matérn-7/2 version this replaces — no epsilon floor is needed to
-# keep ForwardDiff's gradient well-defined at d²=0 (every diagonal entry of a
-# self-covariance matrix).
+# SE-ARD covariance, matching GaussianProcesses.jl's own SEArd convention (τ²·exp(-d²/2)).
 function se_cov_matrix(X1::AbstractMatrix, X2::AbstractMatrix, iℓ2::AbstractVector, τ2::Real)
     d2 = ard_sqdist(X1, X2, iℓ2)
     return τ2 .* exp.(-0.5 .* d2)
@@ -386,38 +231,8 @@ end
 
 extract_hyperparams(gps::BOEDGPs) = [(copy(gp.kernel.iℓ2), gp.kernel.σ2) for gp in gps.gps]
 
-# X_cand_flat: vec(k_R_prior x B) candidate design (the batch being
-# optimized). X_post: k_R_prior x n_post current ST-MCMC posterior samples
-# (the "X'" of paper Eq. 8 — goal-oriented target locations). hyperparams_by_dim
-# is `extract_hyperparams(gps)`, HELD FIXED during this inner optimization.
-#
-#   EIG(X_cand) = (1/k_R_out) Σ_j 0.5·log(det(K_pp^(j)) / det(Σ'^(j)))
-#   Σ'^(j) = K_pp^(j) - K_pc^(j)·(K_cc^(j))⁻¹·K_cp^(j)
-#
-# Since GaussianProcesses.jl fits independent GPs per whitened output
-# dimension (paper Section 2), EIG is computed per dimension and averaged
-# (not summed) so the objective's scale doesn't grow with k_R_out — an
-# aggregation choice not pinned down by the paper, kept trivially swappable.
-#
-# A Schur-complement/matrix-determinant-lemma reformulation was tried here —
-# rewriting logdet(Σ') via the joint covariance [K_pp K_pc; K_pc' K_cc] so
-# only a B x B (rather than n_post x n_post) matrix needs factoring — and
-# REJECTED after measuring it directly under ForwardDiff (see below for why
-# the gradient is now computed with Zygote instead, but this reasoning
-# predates and is independent of that switch): (1) no actual speedup (~1.0x
-# on the dominated gradient cost; profiling showed Julia's generic
-# `Cholesky{Float64} \ Matrix{Dual}` dispatch promotes the WHOLE factor to
-# Dual before solving, rather than doing a cheap mixed-type solve against the
-# fixed Float64 factor, so the assumed saving never materialized); (2) it
-# requires inverting K_pp directly, and K_pp — built from n_post ST-MCMC
-# posterior samples via a smooth SE kernel — is frequently near-singular in
-# practice (measured eigenvalues down to ~1e-15 for realistic posterior
-# samples/length scales), making that inversion numerically unsound in
-# exactly the regime this method already struggles with — a concern that
-# applies regardless of autodiff backend. The original K_cc-based form below
-# never inverts the large matrix (only takes ITS logdet via Cholesky, which
-# stays well-behaved with a small jitter even when near-singular), which is
-# why it's the right form to keep despite being the more expensive one.
+# X_cand_flat: vec(k_R_prior x B) batch being optimized; X_post: the ST-MCMC posterior "X'" of paper Eq. 8; hyperparams_by_dim is held fixed.
+#   EIG(X_cand) = (1/k_R_out) Σ_j 0.5·log(det(K_pp^(j)) / det(Σ'^(j))), Σ'^(j) = K_pp^(j) - K_pc^(j)·(K_cc^(j))⁻¹·K_cp^(j)
 function eig_objective(
     x_cand_flat::AbstractVector, X_post::AbstractMatrix,
     hyperparams_by_dim, k_R_prior::Int, B::Int; jitter::Real = 1e-6,
@@ -436,9 +251,8 @@ function eig_objective(
     return total / length(hyperparams_by_dim)
 end
 
-# Draws the starting batch for the joint EIG optimization (`cfg.batch_init_strategy`):
-#   :posterior_subsample — subsample B points from the current ST-MCMC posterior X'.
-#   :fresh_lhs           — a fresh LHS draw in the truncated whitened space.
+# Draws the starting batch (`cfg.batch_init_strategy`): :posterior_subsample subsamples B points from the current posterior X',
+# :fresh_lhs draws fresh in the truncated whitened space.
 function init_candidate_batch(X_post::AbstractMatrix, B::Int, rng::AbstractRNG; strategy::Symbol = :posterior_subsample)
     if strategy === :posterior_subsample
         n_post = size(X_post, 2)
@@ -451,42 +265,8 @@ function init_candidate_batch(X_post::AbstractMatrix, B::Int, rng::AbstractRNG; 
     end
 end
 
-# Jointly optimizes the WHOLE candidate batch (all B points at once, paper
-# Algorithm 2) via Optim.jl's Fminbox(LBFGS()), maximizing eig_objective
-# (implemented here as minimizing its negation). Box bounds are ±bound_std
-# standard deviations in the whitened Z-space, keeping candidates within the
-# GP's trust region.
-#
-# Gradient is computed with Zygote (reverse-mode), not ForwardDiff
-# (forward-mode) or ReverseDiff. ForwardDiff was the original choice but is
-# the wrong complexity class here: its cost scales with the NUMBER OF INPUTS
-# being differentiated (k_R_prior*B, e.g. 5*90=450 — one dual "lane" group
-# per chunk of ~12 inputs, so dozens of forward passes per gradient), whereas
-# a reverse-mode gradient of a scalar objective costs ~1 forward pass
-# regardless of input count. ReverseDiff was tried next and rejected: it has
-# no built-in adjoint for `cholesky`/`logdet`/`\`, so it traces the raw
-# elementwise LAPACK-style algorithm operating on `TrackedReal`s, building an
-# O(n_post^3 + B^3)-sized instruction tape PER gradient call (thousands to
-# ~10^6 tracked nodes for this problem's n_post/B) — this is what exhausted
-# memory. Zygote sidesteps this entirely: via ChainRules it has efficient,
-# constant-size adjoint rules for `cholesky`, `logdet`, and `\` built in, so
-# differentiating through `eig_objective` never touches their internals. The
-# one piece that DID need rewriting for Zygote is `ard_sqdist` (see its own
-# comment) — Zygote can't differentiate through in-place mutation, which the
-# original loop-based version relied on.
-# Optim.jl's `f_calls_limit`/`g_calls_limit` do NOT reliably bound total
-# evaluations here — verified directly: Fminbox restarts a fresh inner LBFGS
-# solve at every outer barrier round, and f_calls_limit/g_calls_limit are
-# enforced PER INNER SOLVE, not cumulatively across the whole Fminbox run.
-# `call_limit=2000` with `outer_iterations=20` still let a real run reach its
-# full ~39,000-evaluation budget in testing — the option silently doesn't do
-# what its name suggests under Fminbox. This works around that by tracking
-# our OWN cumulative evaluation count and the best point seen so far, and
-# throwing (caught just below) once `call_limit` is hit, returning that best
-# point rather than trusting Optim to stop itself.
-#
-# Also applies the `g_tol`/`f_reltol` convergence-tolerance loosening
-# discussed in experiment_config.jl's eig_g_tol/eig_f_reltol comments.
+# Runs Fminbox(LBFGS()) with Zygote reverse-mode gradients, and enforces `call_limit` itself: Optim's own
+# f_calls_limit/g_calls_limit are enforced per-inner-solve under Fminbox, so they don't cumulate across outer rounds.
 struct EIGCallLimitReached <: Exception end
 
 function run_fminbox_with_call_limit(
@@ -514,11 +294,8 @@ function run_fminbox_with_call_limit(
         G .= only(Zygote.gradient(neg_eig, x))
         return G
     end
-    # Built as an explicit OnceDifferentiable (rather than passing `neg_eig`
-    # straight to `Optim.optimize` with an `autodiff = ...` keyword) because
-    # that keyword only recognizes `:finite`/`:forward` in the installed
-    # Optim version — plugging in an arbitrary gradient function (here,
-    # Zygote's) requires constructing the differentiable object by hand.
+    # An explicit OnceDifferentiable (rather than `autodiff = ...`) since that
+    # keyword only recognizes `:finite`/`:forward` in the installed Optim version.
     od = Optim.OnceDifferentiable(neg_eig, neg_eig_grad!, x_init)
     opts = Optim.Options(
         iterations = iters, outer_iterations = outer_iters,
@@ -544,28 +321,7 @@ function run_fminbox_with_call_limit(
 end
 
 # Jointly optimizes the WHOLE candidate batch (all B points at once, paper
-# Algorithm 2) via Optim.jl's Fminbox(LBFGS()), maximizing eig_objective
-# (implemented here as minimizing its negation). Box bounds are ±bound_std
-# standard deviations in the whitened Z-space, keeping candidates within the
-# GP's trust region.
-#
-# Gradient is computed with Zygote (reverse-mode), not ForwardDiff
-# (forward-mode) or ReverseDiff. ForwardDiff was the original choice but is
-# the wrong complexity class here: its cost scales with the NUMBER OF INPUTS
-# being differentiated (k_R_prior*B, e.g. 5*90=450 — one dual "lane" group
-# per chunk of ~12 inputs, so dozens of forward passes per gradient), whereas
-# a reverse-mode gradient of a scalar objective costs ~1 forward pass
-# regardless of input count. ReverseDiff was tried next and rejected: it has
-# no built-in adjoint for `cholesky`/`logdet`/`\`, so it traces the raw
-# elementwise LAPACK-style algorithm operating on `TrackedReal`s, building an
-# O(n_post^3 + B^3)-sized instruction tape PER gradient call (thousands to
-# ~10^6 tracked nodes for this problem's n_post/B) — this is what exhausted
-# memory. Zygote sidesteps this entirely: via ChainRules it has efficient,
-# constant-size adjoint rules for `cholesky`, `logdet`, and `\` built in, so
-# differentiating through `eig_objective` never touches their internals. The
-# one piece that DID need rewriting for Zygote is `ard_sqdist` (see its own
-# comment) — Zygote can't differentiate through in-place mutation, which the
-# original loop-based version relied on.
+# Algorithm 2) to maximize eig_objective, in whitened space bounded by ±bound_std.
 function optimize_batch(
     X_init::AbstractMatrix, X_post::AbstractMatrix, hyperparams_by_dim, k_R_prior::Int, B::Int;
     bound_std::Real, iters::Int, outer_iters::Int = 20, jitter::Real,
@@ -582,39 +338,10 @@ function optimize_batch(
     return reshape(x_star, k_R_prior, B)
 end
 
-# PROTOTYPE — greedy/sequential alternative to `optimize_batch`'s joint batch
-# optimization, NOT currently wired into calibrate_l63.jl/calibrate_l96.jl.
-#
-# `optimize_batch` jointly optimizes all B points at once (paper Algorithm 2),
-# a k_R_prior*B-dimensional decision variable (e.g. ~2340 for l96_vec's
-# largest N_ens). Profiling traced the 10,000s-to-80,000+ EIG-evaluation
-# blowup to THIS joint dimensionality, not to the kernel matrices themselves
-# (K_pp/K_cc are at most n_post x n_post / B x B — already cheap to factor at
-# this problem's actual n_post/B scale; a Nyström/inducing-point approximation
-# of THOSE would target a bottleneck this codebase doesn't currently have).
-#
-# This instead selects the batch ONE POINT AT A TIME: at step i, the
-# previously selected i-1 points are held FIXED (folded into `eig_objective`
-# as part of X_cand) and only the new point — a k_R_prior-dimensional
-# decision variable, not k_R_prior*B — is optimized to maximize the EIG of
-# the resulting i-point batch so far. This is the standard greedy forward-
-# selection relaxation of joint Gaussian mutual-information batch
-# maximization (e.g. Krause/Singh/Guestrin-style greedy GP sensor placement):
-# provably near-optimal under (approximate) submodularity of this objective,
-# and here mainly valuable for collapsing the per-step decision space by a
-# factor of B. It reuses `eig_objective` verbatim (called with a growing
-# candidate count i = 1, ..., B) rather than duplicating the EIG math.
-#
-# A genuine departure from the paper's specified joint optimization — kept
-# separate from `optimize_batch` rather than replacing it so the two can be
-# compared before deciding whether to switch production experiments over.
+# PROTOTYPE, not wired into calibrate_l63.jl/calibrate_l96.jl: greedily selects the batch one point at a time
+# (previous selections held fixed), collapsing the per-step decision space from k_R_prior*B down to k_R_prior.
 
-# Optimizes ONE new candidate point (a k_R_prior-dim decision variable) to
-# maximize the EIG of the batch formed by appending it to the already-fixed
-# `X_fixed` columns (X_fixed held constant, not part of the gradient). Shared
-# by `optimize_batch_greedy` and `optimize_batch_hybrid`'s greedy prefix phase
-# below — factored out because both need EXACTLY this one-point sub-solve,
-# not because it's used more widely than that.
+# Optimizes one new point to maximize the EIG of appending it to the fixed `X_fixed` columns; shared by the greedy and hybrid prototypes below.
 function optimize_one_point(
     x_init::AbstractVector, X_fixed::AbstractMatrix, X_post::AbstractMatrix,
     hyperparams_by_dim, k_R_prior::Int; bound_std::Real, iters::Int, outer_iters::Int, jitter::Real,
@@ -655,28 +382,8 @@ function optimize_batch_greedy(
     return X_sel
 end
 
-# PROTOTYPE — hybrid of `optimize_batch_greedy` and `optimize_batch`: greedily
-# select points one at a time (cheap while the batch is still sparse) UNTIL a
-# single greedy step's own evaluation count exceeds `greedy_eval_threshold` —
-# empirically, comparing this against pure greedy on the same synthetic
-# problem, EARLY greedy steps cost ~50-90 evaluations each while the whitened
-# box (±bound_std) still has room, but LATE steps (once most of the box is
-# already occupied) blow up to hundreds-to-thousands of evaluations each, as
-# LBFGS struggles to squeeze one more point into an increasingly crowded,
-# near-singular-K_cc configuration — greedy doesn't avoid this conditioning
-# breakdown, it just relocates it into dozens of individually-hard one-point
-# sub-problems, which is why pure greedy measured SLOWER overall than joint
-# despite each step nominally being lower-dimensional.
-#
-# This hybrid tries to get the cheap part of greedy (fast early steps) without
-# paying its expensive part (thrashing one point at a time through the
-# crowded end-game): once the per-step cost signals that the remaining points
-# no longer fit cheaply one at a time, it switches to a SINGLE joint
-# optimization over all remaining slots at once (a k_R_prior*(B-K)-dimensional
-# problem, smaller than the full k_R_prior*B joint problem) — jointly
-# optimizing the remaining points together lets them mutually rearrange
-# relative to each other and to the fixed prefix, rather than each one
-# blindly hunting for room in isolation.
+# PROTOTYPE: greedily selects points until one step's cost exceeds `greedy_eval_threshold`, then jointly optimizes
+# the remaining slots at once — measured roughly break-even with pure joint optimization, not a clear win.
 function optimize_batch_hybrid(
     X_init::AbstractMatrix, X_post::AbstractMatrix, hyperparams_by_dim, k_R_prior::Int, B::Int;
     bound_std::Real, iters::Int, outer_iters::Int = 20, jitter::Real, greedy_eval_threshold::Int = 300,
