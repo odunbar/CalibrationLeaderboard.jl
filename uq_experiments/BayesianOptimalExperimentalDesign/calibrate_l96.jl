@@ -158,7 +158,7 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
             () -> optimize_batch(
                 X_cand0, X_post, hyperparams, k_R_prior, N_ens;
                 bound_std = cfg.eig_bounds_std, iters = cfg.eig_optim_iters, outer_iters = cfg.eig_outer_iters,
-                jitter = cfg.eig_jitter,
+                jitter = cfg.eig_jitter, g_tol = cfg.eig_g_tol, f_reltol = cfg.eig_f_reltol, call_limit = cfg.eig_call_limit,
             ),
             "optimize_batch (iter $k, rng_idx=$rng_idx, case=$(cfg.force_case))",
         )

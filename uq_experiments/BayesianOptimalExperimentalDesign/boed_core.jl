@@ -474,52 +474,251 @@ end
 # one piece that DID need rewriting for Zygote is `ard_sqdist` (see its own
 # comment) — Zygote can't differentiate through in-place mutation, which the
 # original loop-based version relied on.
-function optimize_batch(
-    X_init::AbstractMatrix, X_post::AbstractMatrix, hyperparams_by_dim, k_R_prior::Int, B::Int;
-    bound_std::Real, iters::Int, outer_iters::Int = 20, jitter::Real,
+# Optim.jl's `f_calls_limit`/`g_calls_limit` do NOT reliably bound total
+# evaluations here — verified directly: Fminbox restarts a fresh inner LBFGS
+# solve at every outer barrier round, and f_calls_limit/g_calls_limit are
+# enforced PER INNER SOLVE, not cumulatively across the whole Fminbox run.
+# `call_limit=2000` with `outer_iterations=20` still let a real run reach its
+# full ~39,000-evaluation budget in testing — the option silently doesn't do
+# what its name suggests under Fminbox. This works around that by tracking
+# our OWN cumulative evaluation count and the best point seen so far, and
+# throwing (caught just below) once `call_limit` is hit, returning that best
+# point rather than trusting Optim to stop itself.
+#
+# Also applies the `g_tol`/`f_reltol` convergence-tolerance loosening
+# discussed in experiment_config.jl's eig_g_tol/eig_f_reltol comments.
+struct EIGCallLimitReached <: Exception end
+
+function run_fminbox_with_call_limit(
+    neg_eig_raw::Function, x_init::AbstractVector, lo::AbstractVector, hi::AbstractVector;
+    iters::Int, outer_iters::Int, g_tol::Real, f_reltol::Real, call_limit::Int, label::AbstractString,
 )
-    lo = fill(-bound_std, k_R_prior * B)
-    hi = fill(bound_std, k_R_prior * B)
-    # Fminbox(LBFGS())'s own progress is otherwise invisible from the outside
-    # until it returns — count objective evaluations (each triggers one
-    # Zygote reverse-mode pass, on top of Fminbox's outer barrier iterations)
-    # so a slow-converging optimization is visibly still working, not hung.
     n_calls = Ref(0)
+    best_val = Ref(Inf)
+    best_x = Ref(copy(x_init))
     t0 = time()
     function neg_eig(x)
+        val = neg_eig_raw(x)
         n_calls[] += 1
-        if n_calls[] % 100 == 0
-            @info "optimize_batch: $(n_calls[]) EIG objective evaluations so far" elapsed_s = round(time() - t0; digits = 2)
+        if val < best_val[]
+            best_val[] = val
+            best_x[] = copy(x)
         end
-        return -eig_objective(x, X_post, hyperparams_by_dim, k_R_prior, B; jitter = jitter)
+        if n_calls[] % 100 == 0
+            @info "$label: $(n_calls[]) EIG objective evaluations so far" elapsed_s = round(time() - t0; digits = 2)
+        end
+        n_calls[] >= call_limit && throw(EIGCallLimitReached())
+        return val
     end
     function neg_eig_grad!(G::AbstractVector, x::AbstractVector)
         G .= only(Zygote.gradient(neg_eig, x))
         return G
     end
-    # `iterations` caps EACH inner LBFGS solve at a fixed barrier weight;
-    # `outer_iterations` caps Fminbox's OWN barrier-shrinking loop, which
-    # Optim.jl otherwise defaults to 1000 with an outer_g_abstol=1e-8
-    # convergence tolerance that's tight enough for this EIG objective to
-    # frequently not be met quickly — silently multiplying total work by up
-    # to 1000x. Capped much lower here; see experiment_config.jl's
-    # eig_outer_iters comment.
-    #
     # Built as an explicit OnceDifferentiable (rather than passing `neg_eig`
     # straight to `Optim.optimize` with an `autodiff = ...` keyword) because
     # that keyword only recognizes `:finite`/`:forward` in the installed
     # Optim version — plugging in an arbitrary gradient function (here,
     # Zygote's) requires constructing the differentiable object by hand.
-    od = Optim.OnceDifferentiable(neg_eig, neg_eig_grad!, vec(X_init))
-    res = Optim.optimize(
-        od, lo, hi, vec(X_init), Fminbox(LBFGS()),
-        Optim.Options(iterations = iters, outer_iterations = outer_iters),
+    od = Optim.OnceDifferentiable(neg_eig, neg_eig_grad!, x_init)
+    opts = Optim.Options(
+        iterations = iters, outer_iterations = outer_iters,
+        g_abstol = g_tol, outer_g_abstol = g_tol,
+        f_reltol = f_reltol, outer_f_reltol = f_reltol,
     )
-    converged = Optim.converged(res)
-    outer_rounds = Optim.iterations(res)
-    @info "optimize_batch: done" converged objective_evals = n_calls[] outer_rounds elapsed_s = round(time() - t0; digits = 2)
-    if !converged && outer_rounds >= outer_iters
-        @warn "optimize_batch: Fminbox's outer barrier loop hit its outer_iterations cap ($outer_iters) without converging — the returned EIG-optimized batch is likely under-optimized. Consider raising cfg.eig_outer_iters if this happens often." objective_evals = n_calls[] elapsed_s = round(time() - t0; digits = 2)
+    converged, outer_rounds, hit_limit = false, 0, false
+    try
+        res = Optim.optimize(od, lo, hi, x_init, Fminbox(LBFGS()), opts)
+        converged = Optim.converged(res)
+        outer_rounds = Optim.iterations(res)
+    catch e
+        e isa EIGCallLimitReached || rethrow()
+        hit_limit = true
     end
-    return reshape(Optim.minimizer(res), k_R_prior, B)
+    @info "$label: done" converged outer_rounds objective_evals = n_calls[] elapsed_s = round(time() - t0; digits = 2)
+    if hit_limit
+        @warn "$label: hit the EIG evaluation call_limit ($call_limit) before Optim's own convergence criteria were satisfied — the returned point(s) may be under-optimized. Consider raising cfg.eig_call_limit if this happens often." objective_evals = n_calls[] elapsed_s = round(time() - t0; digits = 2)
+    elseif !converged && outer_rounds >= outer_iters
+        @warn "$label: Fminbox's outer barrier loop hit its outer_iterations cap ($outer_iters) without converging — the returned point(s) may be under-optimized. Consider raising cfg.eig_outer_iters if this happens often." objective_evals = n_calls[] elapsed_s = round(time() - t0; digits = 2)
+    end
+    return best_x[], n_calls[]
+end
+
+# Jointly optimizes the WHOLE candidate batch (all B points at once, paper
+# Algorithm 2) via Optim.jl's Fminbox(LBFGS()), maximizing eig_objective
+# (implemented here as minimizing its negation). Box bounds are ±bound_std
+# standard deviations in the whitened Z-space, keeping candidates within the
+# GP's trust region.
+#
+# Gradient is computed with Zygote (reverse-mode), not ForwardDiff
+# (forward-mode) or ReverseDiff. ForwardDiff was the original choice but is
+# the wrong complexity class here: its cost scales with the NUMBER OF INPUTS
+# being differentiated (k_R_prior*B, e.g. 5*90=450 — one dual "lane" group
+# per chunk of ~12 inputs, so dozens of forward passes per gradient), whereas
+# a reverse-mode gradient of a scalar objective costs ~1 forward pass
+# regardless of input count. ReverseDiff was tried next and rejected: it has
+# no built-in adjoint for `cholesky`/`logdet`/`\`, so it traces the raw
+# elementwise LAPACK-style algorithm operating on `TrackedReal`s, building an
+# O(n_post^3 + B^3)-sized instruction tape PER gradient call (thousands to
+# ~10^6 tracked nodes for this problem's n_post/B) — this is what exhausted
+# memory. Zygote sidesteps this entirely: via ChainRules it has efficient,
+# constant-size adjoint rules for `cholesky`, `logdet`, and `\` built in, so
+# differentiating through `eig_objective` never touches their internals. The
+# one piece that DID need rewriting for Zygote is `ard_sqdist` (see its own
+# comment) — Zygote can't differentiate through in-place mutation, which the
+# original loop-based version relied on.
+function optimize_batch(
+    X_init::AbstractMatrix, X_post::AbstractMatrix, hyperparams_by_dim, k_R_prior::Int, B::Int;
+    bound_std::Real, iters::Int, outer_iters::Int = 20, jitter::Real,
+    g_tol::Real = 1e-3, f_reltol::Real = 1e-6, call_limit::Int = 5_000,
+)
+    lo = fill(-bound_std, k_R_prior * B)
+    hi = fill(bound_std, k_R_prior * B)
+    neg_eig_raw(x) = -eig_objective(x, X_post, hyperparams_by_dim, k_R_prior, B; jitter = jitter)
+    x_star, _ = run_fminbox_with_call_limit(
+        neg_eig_raw, vec(X_init), lo, hi;
+        iters = iters, outer_iters = outer_iters, g_tol = g_tol, f_reltol = f_reltol,
+        call_limit = call_limit, label = "optimize_batch",
+    )
+    return reshape(x_star, k_R_prior, B)
+end
+
+# PROTOTYPE — greedy/sequential alternative to `optimize_batch`'s joint batch
+# optimization, NOT currently wired into calibrate_l63.jl/calibrate_l96.jl.
+#
+# `optimize_batch` jointly optimizes all B points at once (paper Algorithm 2),
+# a k_R_prior*B-dimensional decision variable (e.g. ~2340 for l96_vec's
+# largest N_ens). Profiling traced the 10,000s-to-80,000+ EIG-evaluation
+# blowup to THIS joint dimensionality, not to the kernel matrices themselves
+# (K_pp/K_cc are at most n_post x n_post / B x B — already cheap to factor at
+# this problem's actual n_post/B scale; a Nyström/inducing-point approximation
+# of THOSE would target a bottleneck this codebase doesn't currently have).
+#
+# This instead selects the batch ONE POINT AT A TIME: at step i, the
+# previously selected i-1 points are held FIXED (folded into `eig_objective`
+# as part of X_cand) and only the new point — a k_R_prior-dimensional
+# decision variable, not k_R_prior*B — is optimized to maximize the EIG of
+# the resulting i-point batch so far. This is the standard greedy forward-
+# selection relaxation of joint Gaussian mutual-information batch
+# maximization (e.g. Krause/Singh/Guestrin-style greedy GP sensor placement):
+# provably near-optimal under (approximate) submodularity of this objective,
+# and here mainly valuable for collapsing the per-step decision space by a
+# factor of B. It reuses `eig_objective` verbatim (called with a growing
+# candidate count i = 1, ..., B) rather than duplicating the EIG math.
+#
+# A genuine departure from the paper's specified joint optimization — kept
+# separate from `optimize_batch` rather than replacing it so the two can be
+# compared before deciding whether to switch production experiments over.
+
+# Optimizes ONE new candidate point (a k_R_prior-dim decision variable) to
+# maximize the EIG of the batch formed by appending it to the already-fixed
+# `X_fixed` columns (X_fixed held constant, not part of the gradient). Shared
+# by `optimize_batch_greedy` and `optimize_batch_hybrid`'s greedy prefix phase
+# below — factored out because both need EXACTLY this one-point sub-solve,
+# not because it's used more widely than that.
+function optimize_one_point(
+    x_init::AbstractVector, X_fixed::AbstractMatrix, X_post::AbstractMatrix,
+    hyperparams_by_dim, k_R_prior::Int; bound_std::Real, iters::Int, outer_iters::Int, jitter::Real,
+    g_tol::Real = 1e-3, f_reltol::Real = 1e-6, call_limit::Int = 5_000,
+)
+    lo = fill(-bound_std, k_R_prior)
+    hi = fill(bound_std, k_R_prior)
+    B_so_far = size(X_fixed, 2) + 1
+    neg_eig_raw(x) = -eig_objective(vec(hcat(X_fixed, x)), X_post, hyperparams_by_dim, k_R_prior, B_so_far; jitter = jitter)
+    return run_fminbox_with_call_limit(
+        neg_eig_raw, x_init, lo, hi;
+        iters = iters, outer_iters = outer_iters, g_tol = g_tol, f_reltol = f_reltol,
+        call_limit = call_limit, label = "optimize_one_point",
+    )
+end
+
+function optimize_batch_greedy(
+    X_init::AbstractMatrix, X_post::AbstractMatrix, hyperparams_by_dim, k_R_prior::Int, B::Int;
+    bound_std::Real, iters::Int, outer_iters::Int = 20, jitter::Real,
+    g_tol::Real = 1e-3, f_reltol::Real = 1e-6, call_limit::Int = 5_000,
+)
+    X_sel = zeros(eltype(X_init), k_R_prior, 0)
+    total_calls = 0
+    t0 = time()
+    report_every = max(1, B ÷ 10)
+    for i in 1:B
+        x_star, n_calls_i = optimize_one_point(
+            X_init[:, i], X_sel, X_post, hyperparams_by_dim, k_R_prior;
+            bound_std = bound_std, iters = iters, outer_iters = outer_iters, jitter = jitter,
+            g_tol = g_tol, f_reltol = f_reltol, call_limit = call_limit,
+        )
+        X_sel = hcat(X_sel, x_star)
+        total_calls += n_calls_i
+        if i % report_every == 0 || i == B
+            @info "optimize_batch_greedy: point $i/$B selected" objective_evals = n_calls_i cumulative_evals = total_calls elapsed_s = round(time() - t0; digits = 2)
+        end
+    end
+    return X_sel
+end
+
+# PROTOTYPE — hybrid of `optimize_batch_greedy` and `optimize_batch`: greedily
+# select points one at a time (cheap while the batch is still sparse) UNTIL a
+# single greedy step's own evaluation count exceeds `greedy_eval_threshold` —
+# empirically, comparing this against pure greedy on the same synthetic
+# problem, EARLY greedy steps cost ~50-90 evaluations each while the whitened
+# box (±bound_std) still has room, but LATE steps (once most of the box is
+# already occupied) blow up to hundreds-to-thousands of evaluations each, as
+# LBFGS struggles to squeeze one more point into an increasingly crowded,
+# near-singular-K_cc configuration — greedy doesn't avoid this conditioning
+# breakdown, it just relocates it into dozens of individually-hard one-point
+# sub-problems, which is why pure greedy measured SLOWER overall than joint
+# despite each step nominally being lower-dimensional.
+#
+# This hybrid tries to get the cheap part of greedy (fast early steps) without
+# paying its expensive part (thrashing one point at a time through the
+# crowded end-game): once the per-step cost signals that the remaining points
+# no longer fit cheaply one at a time, it switches to a SINGLE joint
+# optimization over all remaining slots at once (a k_R_prior*(B-K)-dimensional
+# problem, smaller than the full k_R_prior*B joint problem) — jointly
+# optimizing the remaining points together lets them mutually rearrange
+# relative to each other and to the fixed prefix, rather than each one
+# blindly hunting for room in isolation.
+function optimize_batch_hybrid(
+    X_init::AbstractMatrix, X_post::AbstractMatrix, hyperparams_by_dim, k_R_prior::Int, B::Int;
+    bound_std::Real, iters::Int, outer_iters::Int = 20, jitter::Real, greedy_eval_threshold::Int = 300,
+    g_tol::Real = 1e-3, f_reltol::Real = 1e-6, call_limit::Int = 5_000,
+)
+    X_sel = zeros(eltype(X_init), k_R_prior, 0)
+    total_calls = 0
+    t0 = time()
+    i = 1
+    while i <= B
+        x_star, n_calls_i = optimize_one_point(
+            X_init[:, i], X_sel, X_post, hyperparams_by_dim, k_R_prior;
+            bound_std = bound_std, iters = iters, outer_iters = outer_iters, jitter = jitter,
+            g_tol = g_tol, f_reltol = f_reltol, call_limit = call_limit,
+        )
+        X_sel = hcat(X_sel, x_star)
+        total_calls += n_calls_i
+        if n_calls_i > greedy_eval_threshold
+            @info "optimize_batch_hybrid: greedy step $i/$B cost $n_calls_i evaluations (> threshold $greedy_eval_threshold) — switching remaining $(B - i) point(s) to a joint optimization" cumulative_evals = total_calls elapsed_s = round(time() - t0; digits = 2)
+            i += 1
+            break
+        end
+        i += 1
+    end
+
+    K = size(X_sel, 2)
+    n_remaining = B - K
+    if n_remaining > 0
+        lo = fill(-bound_std, k_R_prior * n_remaining)
+        hi = fill(bound_std, k_R_prior * n_remaining)
+        neg_eig_joint_raw(x_free) = -eig_objective(
+            vec(hcat(X_sel, reshape(x_free, k_R_prior, n_remaining))), X_post, hyperparams_by_dim, k_R_prior, B; jitter = jitter,
+        )
+        x_free_init = vec(X_init[:, (K + 1):B])
+        x_free_star, n_calls_joint = run_fminbox_with_call_limit(
+            neg_eig_joint_raw, x_free_init, lo, hi;
+            iters = iters, outer_iters = outer_iters, g_tol = g_tol, f_reltol = f_reltol,
+            call_limit = call_limit, label = "optimize_batch_hybrid (joint phase)",
+        )
+        total_calls += n_calls_joint
+        X_sel = hcat(X_sel, reshape(x_free_star, k_R_prior, n_remaining))
+        @info "optimize_batch_hybrid: joint phase for remaining $n_remaining point(s) done" cumulative_evals = total_calls elapsed_s = round(time() - t0; digits = 2)
+    end
+    return X_sel
 end

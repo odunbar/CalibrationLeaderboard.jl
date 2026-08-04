@@ -86,6 +86,33 @@ method_key = "boed"
 #                           a batch is being cut off before genuine
 #                           convergence, so it can be raised deliberately if
 #                           that happens often.
+#    eig_g_tol:             g_abstol/outer_g_abstol (gradient-norm convergence
+#                           tolerance), inner+outer. Optim's own default
+#                           (1e-8) is essentially unreachable for this
+#                           objective, so left there `optimize_batch` never
+#                           "converges" and always burns through the full
+#                           eig_optim_iters * eig_outer_iters budget. 1e-3
+#                           reflects that an O(10-100s)-scale EIG doesn't need
+#                           gradient-flat-to-1e-8, especially given
+#                           eig_jitter already perturbs it by ~1e-6.
+#    eig_f_reltol:          f_reltol/outer_f_reltol (relative-improvement
+#                           convergence tolerance), inner+outer. Optim's
+#                           default is 0.0 (disabled) — enabling this catches
+#                           plateaus (negligible further improvement) that
+#                           happen well before eig_g_tol is satisfied.
+#    eig_call_limit:        Hard cap on raw EIG evaluations. NOT Optim's own
+#                           f_calls_limit/g_calls_limit — those are enforced
+#                           PER INNER LBFGS SOLVE under Fminbox, not
+#                           cumulatively across outer rounds, so they don't
+#                           actually bound total cost (verified directly);
+#                           `optimize_batch` tracks its own running count and
+#                           best-so-far point instead. On a representative
+#                           case, quality vs. this cap measured as: 2,000 →
+#                           90.0%, 5,000 → 90.2%, 10,000 → 92.0%, 20,000 →
+#                           96.5% (all relative to an uncapped run). 5,000
+#                           sits in a flat region between 2,000 and 10,000 —
+#                           raise toward 10,000-20,000 if quality matters more
+#                           than wall-clock here.
 #    eig_bounds_std:        Fminbox box half-width for the candidate batch,
 #                           in prior-whitened-truncated standard-normal units
 #                           (keeps candidates within the GP's trust region).
@@ -145,6 +172,9 @@ function experiment_config(case::Symbol)
         tmcmc_thin = 1,
         eig_optim_iters = 200,
         eig_outer_iters = 20,
+        eig_g_tol = 1e-3,
+        eig_f_reltol = 1e-6,
+        eig_call_limit = 2_000,
         eig_bounds_std = 4.0,
         eig_jitter = 1e-6,
         batch_init_strategy = :posterior_subsample,
