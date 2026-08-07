@@ -94,7 +94,6 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
         "run_tmcmc (iter 1, rng_idx=$rng_idx)",
     )
 
-    gps_by_k = Dict{Int, BOEDGPs}(1 => gps)
     posteriors_by_k = Dict{Int, Matrix{Float64}}(1 => from_prior_whitened(prob, X_post))
     n_iters_completed = 1
     @info "GBOED iteration 1/$(cfg.max_iters) done (N_ens=$N_ens, rng_idx=$rng_idx)"
@@ -128,7 +127,6 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
             () -> run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin),
             "run_tmcmc (iter $k, rng_idx=$rng_idx)",
         )
-        gps_by_k[k] = gps
         posteriors_by_k[k] = from_prior_whitened(prob, X_post)
         n_iters_completed = k
         @info "GBOED iteration $k/$(cfg.max_iters) done (N_ens=$N_ens, rng_idx=$rng_idx)"
@@ -136,7 +134,6 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
 
     JLD2.save(
         joinpath(output_dir, results_filename(cfg, N_ens, rng_idx)),
-        "gps_by_k", gps_by_k,
         "posteriors_by_k", posteriors_by_k,
         "k_values", collect(1:n_iters_completed),
         "n_iters_completed", n_iters_completed,

@@ -20,12 +20,10 @@ using Distributions
 using LinearAlgebra
 using Random
 using JLD2
-# `results_filename` also holds `gps_by_k` (BOEDGPs objects wrapping
-# GaussianProcesses.GPE, from calibrate_l63.jl). This script never touches
-# that key, but JLD2 resolves a file's whole committed-datatype table on
-# open regardless of which keys are later read — without this `using`, it
-# can't find the real GPE type and reconstructs a placeholder (harmless
-# here, since we never read `gps_by_k`, but noisy and unnecessary).
+# Older result files may hold a `gps_by_k` key (BOEDGPs objects wrapping
+# GaussianProcesses.GPE); this `using` lets JLD2 resolve its committed GPE
+# datatype on open rather than reconstructing a noisy placeholder, even
+# though the key itself is never read here.
 using GaussianProcesses
 
 const _COMMON = joinpath(@__DIR__, "..", "..", "common")
