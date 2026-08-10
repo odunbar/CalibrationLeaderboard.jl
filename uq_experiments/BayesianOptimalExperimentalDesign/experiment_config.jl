@@ -68,7 +68,7 @@ function experiment_config(case::Symbol)
             model = "l96",
             force_case = "const-force",
             N_ens_sizes = collect(4:2:4 + 8 * 2),
-            max_iters = 15,
+            max_iters = 10,
             retain_var_input = 0.99,
             common...,
         )
@@ -77,7 +77,7 @@ function experiment_config(case::Symbol)
             model = "l96",
             force_case = "vec-force",
             N_ens_sizes = collect(50:5:50 + 8 * 5),
-            max_iters = 15,
+            max_iters = 8, # it's so slow, so lets start here
             retain_var_input = 0.9,
             common...,
         )
@@ -86,7 +86,7 @@ function experiment_config(case::Symbol)
             model = "l96",
             force_case = "flux-force",
             N_ens_sizes = collect(50:5:50 + 8 * 5),
-            max_iters = 15,
+            max_iters = 8,
             retain_var_input = 0.9,
             common...,
         )

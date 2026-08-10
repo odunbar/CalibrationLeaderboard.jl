@@ -19,14 +19,14 @@
 # One-time precompile before submitting (avoids 100 simultaneous precompiles):
 #   mkdir -p ../output/slurm
 #   julia --project=.. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
-
+# We have 56 cores at 6 GB memory per core, so I'll ask for 46 at 8G
 #SBATCH --job-name=calib
 #SBATCH --output=../output/slurm/calib_%A_%a.out
 #SBATCH --error=../output/slurm/calib_%A_%a.err
 #SBATCH --array=1-180%100
-#SBATCH --time=04:00:00
-#SBATCH --mem=16G
-#SBATCH --cpus-per-task=4
+#SBATCH --time=8:00:00
+#SBATCH --mem=12G
+#SBATCH --cpus-per-task=28
 #SBATCH --ntasks=1
 #SBATCH --constraint=cascadelake
 
