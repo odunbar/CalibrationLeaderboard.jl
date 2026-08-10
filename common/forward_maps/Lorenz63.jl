@@ -59,16 +59,36 @@ function lorenz_forward(
     return gt
 end
 
+# Column range of `lorenz_solve` output covered by the statistics window.
+# Extracted so that methods needing the raw attractor states (e.g. score-based
+# response estimators) select exactly the same columns that `stats` averages over.
+# NOTE: column j holds time (j-1)*dt, so the `ceil` here is off by one timestep.
+# This is deliberate and must not be "fixed" — every stored preliminaries file's
+# `y` was generated with these indices.
+function stats_window_indices(config::LorenzConfig, observation_config::ObservationConfig)
+    dt = config.dt
+    return Int(ceil(observation_config.T_start / dt)):Int(ceil(observation_config.T_end / dt))
+end
+
+# Runs the forward model once and returns BOTH the summary statistics and the
+# raw state trajectory.  `lorenz_forward` discards the trajectory; methods that
+# need the states (score matching, response theory, emulator training) should
+# call this instead of paying for a second solve.
+function lorenz_forward_with_states(
+    params::EnsembleMemberConfig,
+    x0::VorM,
+    config::LorenzConfig,
+    observation_config::ObservationConfig,
+) where {VorM <: AbstractVecOrMat}
+    xn = lorenz_solve(params, x0, config)
+    return (G = stats(xn, config, observation_config), states = xn)
+end
+
 #Calculates statistics for forward model output
-# Inputs: 
+# Inputs:
 # - xn: timeseries of states for length of simulation through Lorenz63
 function stats(xn::VorM, config::LorenzConfig, observation_config::ObservationConfig) where {VorM <: AbstractVecOrMat}
-    T_start = observation_config.T_start
-    T_end = observation_config.T_end
-    dt = config.dt
-    N_start = Int(ceil(T_start / dt))
-    N_end = Int(ceil(T_end / dt))
-    xn_stat = xn[:, N_start:N_end]
+    xn_stat = xn[:, stats_window_indices(config, observation_config)]
     N_state = size(xn_stat, 1)
     gt = zeros(eltype(xn_stat), 9)  # Might want to switch to more general statement?
     gt[1:3] = mean(xn_stat, dims = 2)
