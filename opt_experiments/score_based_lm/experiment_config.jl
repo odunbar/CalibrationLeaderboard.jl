@@ -43,10 +43,10 @@ run_date = haskey(ENV, "RUN_DATE") ? Date(ENV["RUN_DATE"]) : today()
 #   regulariser and must be swept, not guessed.  Values below are the published
 #   starting points (normalised units).
 function experiment_config(case::Symbol)
-    n_repeats    = 100
+    n_repeats    = 30
     rmse_targets = [1.0, 1.1, 1.2]
-    N_ens_sizes  = [1, 5, 10]
-    N_iter       = 50
+    N_ens_sizes  = [1, 5, 10, 20, 30, 40, 50, 60]
+    N_iter       = ceil(500/N_ens_sizes)
 
     common = (
         rmse_targets = rmse_targets,
