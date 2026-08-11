@@ -12,14 +12,14 @@
 set -euo pipefail
 
 EXP_ID=${1:-}
-LABEL="l96c_${SCORE_KIND:-dsm}_${BUDGET_MODE:-fair}${EXP_ID:+_${EXP_ID}}"
+LABEL="l96c_${SCORE_KIND:-dsm}_${BUDGET_MODE:-serial}${EXP_ID:+_${EXP_ID}}"
 RUN_DATE=$(date +%Y-%m-%d)
 # Arm selection. Each (SCORE_KIND, BUDGET_MODE) pair is a SEPARATE submission
 # writing its own netcdf under its own algorithm_type.
 #   SCORE_KIND  : dsm (learned score, DSM) | kgmm (learned score, KGMM) | gaussian (quasi-Gaussian FDT baseline)
-#   BUDGET_MODE : fair (N_ens base-length windows) | ensemble (one window x N_ens)
+#   BUDGET_MODE : serial (one long window) | parallel (N_ens independent branches off one spin-up)
 SCORE_KIND=${SCORE_KIND:-dsm}
-BUDGET_MODE=${BUDGET_MODE:-fair}
+BUDGET_MODE=${BUDGET_MODE:-serial}
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 cd "$DIR"
@@ -68,18 +68,18 @@ echo "=== Done. Monitor with: squeue -u \$USER ==="
 # Substitute the real RUN_DATE for <yyyy-mm-dd>, and the arm you want.
 #
 # preliminaries:
-#   sbatch -A esm --export=ALL,SCRIPT=l96_preliminaries.jl,EXPERIMENT=l96_const,RUN_DATE=<yyyy-mm-dd>,SCORE_KIND=dsm,BUDGET_MODE=fair preliminaries.sbatch
+#   sbatch -A esm --export=ALL,SCRIPT=l96_preliminaries.jl,EXPERIMENT=l96_const,RUN_DATE=<yyyy-mm-dd>,SCORE_KIND=dsm,BUDGET_MODE=serial preliminaries.sbatch
 #
 # one array cell (smoke test):
-#   sbatch -A esm --array=1-1 --export=ALL,SCRIPT=run_l96_sblm.jl,EXPERIMENT=l96_const,RUN_DATE=<yyyy-mm-dd>,SCORE_KIND=dsm,BUDGET_MODE=fair run_array.sbatch
+#   sbatch -A esm --array=1-1 --export=ALL,SCRIPT=run_l96_sblm.jl,EXPERIMENT=l96_const,RUN_DATE=<yyyy-mm-dd>,SCORE_KIND=dsm,BUDGET_MODE=serial run_array.sbatch
 #
 # full array:
-#   sbatch -A esm --array=1-900 --export=ALL,SCRIPT=run_l96_sblm.jl,EXPERIMENT=l96_const,RUN_DATE=<yyyy-mm-dd>,SCORE_KIND=dsm,BUDGET_MODE=fair run_array.sbatch
+#   sbatch -A esm --array=1-900 --export=ALL,SCRIPT=run_l96_sblm.jl,EXPERIMENT=l96_const,RUN_DATE=<yyyy-mm-dd>,SCORE_KIND=dsm,BUDGET_MODE=serial run_array.sbatch
 #
 # leaderboard only:
-#   sbatch -A esm --export=ALL,EXPERIMENT=l96_const,RUN_DATE=<yyyy-mm-dd>,SCORE_KIND=dsm,BUDGET_MODE=fair leaderboard.sbatch
+#   sbatch -A esm --export=ALL,EXPERIMENT=l96_const,RUN_DATE=<yyyy-mm-dd>,SCORE_KIND=dsm,BUDGET_MODE=serial leaderboard.sbatch
 #
 # the other arms:
-#   SCORE_KIND=dsm       BUDGET_MODE=ensemble  bash submit_l96_const.sh
-#   SCORE_KIND=gaussian BUDGET_MODE=fair      bash submit_l96_const.sh
+#   SCORE_KIND=dsm       BUDGET_MODE=parallel  bash submit_l96_const.sh
+#   SCORE_KIND=gaussian BUDGET_MODE=serial      bash submit_l96_const.sh
 # ---------------------------------------------------------------------------

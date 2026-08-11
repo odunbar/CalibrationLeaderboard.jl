@@ -107,12 +107,12 @@ Two independent switches, each combination a separate submission and netcdf:
 
 | `SCORE_KIND` | `BUDGET_MODE` | `algorithm_type` |
 |---|---|---|
-| `dsm` | `fair` | `Score-based LM (GFDT, DSM)` |
-| `dsm` | `ensemble` | `Score-based LM (GFDT, DSM) (extended window)` |
-| `kgmm` | `fair` | `Score-based LM (GFDT, KGMM)` |
-| `kgmm` | `ensemble` | `Score-based LM (GFDT, KGMM) (extended window)` |
-| `gaussian` | `fair` | `Quasi-Gaussian FDT LM` |
-| `gaussian` | `ensemble` | `Quasi-Gaussian FDT LM (extended window)` |
+| `dsm` | `serial` | `Score-based LM (GFDT, DSM) (extended window)` |
+| `dsm` | `parallel` | `Score-based LM (GFDT, DSM) (parallel branches)` |
+| `kgmm` | `serial` | `Score-based LM (GFDT, KGMM) (extended window)` |
+| `kgmm` | `parallel` | `Score-based LM (GFDT, KGMM) (parallel branches)` |
+| `gaussian` | `serial` | `Quasi-Gaussian FDT LM (extended window)` |
+| `gaussian` | `parallel` | `Quasi-Gaussian FDT LM (parallel branches)` |
 
 `dsm` is the single-sigma denoising-score-matching neural net (a training loop,
 warm-started across LM iterations). `kgmm` is a k-means Gaussian-mixture score
@@ -121,21 +121,29 @@ per-cluster covariance estimates each iteration, added specifically because DSM
 is known to struggle in this sample-starved regime (see `VALIDATION.md`).
 
 **Budget modes.** Both spend `N_ens` forward-model evaluations per LM iteration
-and differ only in how:
+and integrate the same total model time, `T_start` once + `N_ens·W`; they differ
+only in how that `N_ens·W` is arranged:
 
-- `:fair` — `N_ens` independent base-length runs, pooled (the LM convention).
-- `:ensemble` — one run with the statistics window stretched ×`N_ens`. `T_start`
-  is unchanged, so the transient onto the current attractor is still discarded in
-  full. Buys longer usable lags in the correlation integral, which is the binding
-  constraint on the 10-model-time-unit `l63` / `l96_const` windows.
+- `:serial` — one continuous window `N_ens` times longer than the base window.
+  Inherently sequential (each step depends on the last), but the whole span is
+  one attractor sample, giving the longest usable lags in the correlation
+  integral for a given cost — the binding constraint on the 10-model-time-unit
+  `l63` / `l96_const` windows.
+- `:parallel` — spin up ONCE per LM iteration, then fork `N_ens` independent
+  base-length branches from small (`ic_cov_sqrt`) perturbations of that
+  on-attractor state. The branches carry no burn-in of their own and are
+  mutually independent, so they can be integrated concurrently — same total
+  integration cost as `:serial`, but parallelisable instead of one long serial
+  run. (Replaces the old `:fair` mode, which paid `T_start` redundantly for
+  every member; at `N_ens=1` `:fair` was already identical to `:serial`, so
+  nothing is lost.)
 
 At `N_ens = 1` the two modes are identical — that row is the strict
 apples-to-apples comparison against `levenberg_marquardt`.
 
-`:ensemble` integrates `T_start + N_ens·W` where `:fair` integrates
-`N_ens·(T_start + W)`, so charging both `N_ens` **over-charges** `:ensemble`
-(for L63, 80 vs 200 model time units at `N_ens=5`). That is the conservative
-direction; the exact ratio is recorded per cell in `n_fwd_actual`.
+Charging `N_ens` forward evaluations either way means the metric doesn't
+distinguish wall-clock parallelism from serial cost; the exact per-cell
+integration time is recorded in `n_fwd_actual` regardless of mode.
 
 ## Cost metric
 
@@ -178,9 +186,9 @@ separate and never submitted by `submit_l*.sh`.
 ```bash
 cd hpc-variant
 bash submit_precompile.sh                       # once, after a checkout or package update
-bash submit_l63.sh                              # defaults to SCORE_KIND=dsm BUDGET_MODE=fair
-SCORE_KIND=dsm  BUDGET_MODE=ensemble bash submit_l63.sh
-SCORE_KIND=kgmm BUDGET_MODE=fair     bash submit_l63.sh
+bash submit_l63.sh                              # defaults to SCORE_KIND=dsm BUDGET_MODE=serial
+SCORE_KIND=dsm  BUDGET_MODE=parallel bash submit_l63.sh
+SCORE_KIND=kgmm BUDGET_MODE=serial   bash submit_l63.sh
 SCORE_KIND=gaussian bash submit_l96_const.sh
 ```
 
@@ -189,5 +197,8 @@ If any of those change in `experiment_config.jl`, update `--array` in
 `run_array.sbatch` **and** in every `submit_l*.sh`.
 
 `run_array.sbatch` uses `--time=12:00:00 --mem=24G` (vs LM's `04:00:00`/`16G`)
-because score training dominates wall-clock and `:ensemble` at `N_ens=10`
-integrates 10× the window.
+because score training dominates wall-clock and `:serial` at `N_ens=10`
+integrates 10× the window. `:parallel` integrates the same total but as
+`Threads.@threads`-parallel branches (`--cpus-per-task=4` in `run_array.sbatch`
+is passed through to `JULIA_NUM_THREADS`), so it stands to gain the most
+wall-clock from that allocation.

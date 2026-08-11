@@ -6,7 +6,7 @@
 # shared budget knob for both modes) rather than a singleton [1.0].
 #
 # Local: julia --project=. run_to_leaderboard.jl
-#        EXPERIMENT=l96_const SCORE_KIND=dsm BUDGET_MODE=ensemble julia --project=. run_to_leaderboard.jl
+#        EXPERIMENT=l96_const SCORE_KIND=dsm BUDGET_MODE=parallel julia --project=. run_to_leaderboard.jl
 
 using JLD2
 using Dates
@@ -58,8 +58,8 @@ function main()
 
     # Convergence summary plus the audit counter.  conv_score is the headline
     # (comparable to every other entry); n_fwd_actual measures integration time in
-    # base-run equivalents and is LOWER than the charge in :ensemble mode, which
-    # documents that that mode is conservatively charged.
+    # base-run equivalents and is LOWER than the charge in :serial/:parallel mode,
+    # which documents that both modes are conservatively charged.
     for (ee, N_ens) in enumerate(n_ens_ax), (rr, tgt) in enumerate(n_rmse_ax)
         col = @view conv_scores[:, ee, rr]
         nconv = count(!isnan, col)

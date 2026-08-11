@@ -405,8 +405,8 @@ end
 ###############  Observable / conjugate accumulation  #################
 ########################################################################
 
-# Accumulator so that :fair mode (N_ens independent base-length windows) and
-# :ensemble mode (one window N_ens times longer) share one code path.  Each
+# Accumulator so that :parallel mode (N_ens independent base-length branches)
+# and :serial mode (one window N_ens times longer) share one code path.  Each
 # member is centred on its OWN finite-time mean before being folded in.
 mutable struct ResponseAccumulator{MM <: AbstractMatrix}
     num::MM
@@ -440,9 +440,9 @@ finish_response(acc::ResponseAccumulator) = acc.num / acc.den
 
 Assemble `J = (dphi/dm) * (dm/dtheta)` from one or more attractor windows.
 
-* `Xs`        — vector of nx x M state matrices.  Length `N_ens` in `:fair` mode
-                (independent base-length windows); length 1 in `:ensemble` mode
-                (a single window `N_ens` times longer).
+* `Xs`        — vector of nx x M state matrices.  Length `N_ens` in `:parallel`
+                mode (independent base-length branches); length 1 in `:serial`
+                mode (a single window `N_ens` times longer).
 * `moment_fn(X)    -> n_A x M`   raw-moment observables whose time averages determine G
 * `conj_fn(X, S)   -> nu x M`    conjugate variables B_j
 * `dphi_fn(m)      -> ny x n_A`  Jacobian of G = phi(m) w.r.t. the raw moments

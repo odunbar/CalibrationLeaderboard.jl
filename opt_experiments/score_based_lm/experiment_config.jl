@@ -15,12 +15,19 @@ EXPERIMENT = experiments[1]
 #                   :gaussian — quasi-Gaussian FDT baseline, s(x) = -C^{-1}(x-mu)
 SCORE_KIND = :dsm
 
-# Budget mode (both charged outer_iter * N_ens forward-model evaluations):
-#   :fair     — N_ens independent base-length runs, pooled (the LM convention)
-#   :ensemble — ONE run with the statistics window stretched x N_ens, which buys
-#               longer usable lags in the correlation integral
+# Budget mode (both charged outer_iter * N_ens forward-model evaluations, and
+# both integrate T_start once + N_ens*W of total model time):
+#   :serial   — ONE continuous run with the statistics window stretched x N_ens
+#               (T_start paid once); the whole N_ens*W span is one inherently
+#               sequential integration, but it gives the longest usable lags in
+#               the correlation integral for a given total cost.
+#   :parallel — spin up ONCE per outer iteration, then fork N_ens independent
+#               base-length branches from small (ic_cov_sqrt) perturbations of
+#               that on-attractor state.  Same total integration cost as
+#               :serial, but the N_ens branches are mutually independent and
+#               can run concurrently.
 # At N_ens == 1 the two modes are identical.
-BUDGET_MODE = :fair
+BUDGET_MODE = :serial
 
 # Pinned at submission time via RUN_DATE env var (set by submit_*.sh).
 # Falls back to today() for local runs.
@@ -46,13 +53,13 @@ function experiment_config(case::Symbol)
     n_repeats    = 30
     rmse_targets = [1.0, 1.1, 1.2]
     N_ens_sizes  = [1, 5, 10, 20, 30, 40, 50, 60]
-    N_iter       = ceil(500/N_ens_sizes)
+    budget_total = 500     # outer_iter * N_ens is capped at this per cell
 
     common = (
         rmse_targets = rmse_targets,
         N_ens_sizes  = N_ens_sizes,
         n_repeats    = n_repeats,
-        N_iter       = N_iter,
+        budget_total = budget_total,
         run_date     = run_date,
         score_kind   = score_kind_from_env(),
         budget_mode  = budget_mode_from_env(),
@@ -104,6 +111,11 @@ function experiment_config(case::Symbol)
     end
 end
 
+# Fixed total budget per cell: outer_iter * N_ens <= budget_total, so cells with
+# a larger N_ens run fewer, cheaper-Jacobian-per-iteration LM iterations rather
+# than a fixed iteration count regardless of N_ens.
+n_iter_for(cfg, N_ens::Int) = Int(ceil(cfg.budget_total / N_ens))
+
 ########################################################################
 ###############  FILENAME BUILDERS  ###################################
 ########################################################################
@@ -118,7 +130,8 @@ function algorithm_type(cfg)
     else
         "Score-based LM (GFDT, DSM)"
     end
-    return cfg.budget_mode === :ensemble ? base * " (extended window)" : base
+    cfg.budget_mode === :parallel && return base * " (parallel branches)"
+    return base * " (extended window)"
 end
 
 function case_suffix(cfg, N_ens, rmse_target, rng_idx)
@@ -191,6 +204,6 @@ function budget_mode_from_env()
     else
         BUDGET_MODE
     end
-    mode in (:fair, :ensemble) || throw(ArgumentError("BUDGET_MODE must be fair or ensemble, got $mode"))
+    mode in (:serial, :parallel) || throw(ArgumentError("BUDGET_MODE must be serial or parallel, got $mode"))
     return mode
 end

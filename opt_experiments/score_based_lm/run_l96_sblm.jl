@@ -13,7 +13,7 @@
 # Local: EXPERIMENT=l96_const julia --project=. run_l96_sblm.jl
 #        EXPERIMENT=l96_vec   julia --project=. run_l96_sblm.jl
 # One cell: EXPERIMENT=l96_const julia --project=. run_l96_sblm.jl <task_idx>
-# Arms:     SCORE_KIND=dsm|gaussian|kgmm  BUDGET_MODE=fair|ensemble
+# Arms:     SCORE_KIND=dsm|gaussian|kgmm  BUDGET_MODE=serial|parallel
 
 using BSON
 using Distributions
@@ -23,6 +23,11 @@ using JLD2
 using LinearAlgebra
 using Random
 using Statistics
+
+# The n_members forward solves below are independent (see run_one) and threaded
+# with Threads.@threads; BLAS threading underneath would oversubscribe on top of
+# that, so hand BLAS a single thread whenever Julia itself has more than one.
+Threads.nthreads() > 1 && LinearAlgebra.BLAS.set_num_threads(1)
 
 const _COMMON = joinpath(@__DIR__, "..", "..", "common")
 include(joinpath(_COMMON, "forward_maps", "Lorenz96.jl"))
@@ -37,18 +42,30 @@ include("l96_problem.jl")
 ###############  Budget modes  ########################################
 ########################################################################
 
-# Both modes spend N_ens forward-model evaluations per iteration and differ only
-# in how: N_ens base-length windows, or one window N_ens times longer.  T_start is
-# never shortened, so the transient onto the current attractor is always
-# discarded in full.
+# Both budget modes spend N_ens forward-model evaluations per iteration and
+# integrate the same total model time, T_start once + N_ens*W, and differ only
+# in how that N_ens*W is arranged:
+#   :serial   — one continuous window N_ens times longer than the base window.
+#               Inherently sequential (each step depends on the last), but the
+#               whole span is one attractor sample, giving the longest usable
+#               lags in the GFDT correlation integral for a given cost.
+#   :parallel — spin up ONCE (returned as `spinup_cfg`), then N_ens independent
+#               base-length branches perturbed off that attractor state.  The
+#               branches carry no burn-in of their own and are mutually
+#               independent, so they can be integrated concurrently.
+# Returns (cfg_k, oc_k, n_members, spinup_cfg); spinup_cfg is `nothing` unless
+# a separate once-per-iteration spin-up is needed.
 function budget_windows(cfg, prob, N_ens)
     (; lorenz_cfg, obs_cfg) = prob
-    if cfg.budget_mode === :ensemble
-        W  = obs_cfg.T_end - obs_cfg.T_start
+    W = obs_cfg.T_end - obs_cfg.T_start
+    if cfg.budget_mode === :serial
         oc = ObservationConfig(obs_cfg.T_start, obs_cfg.T_start + N_ens * W)
-        return (LorenzConfig(lorenz_cfg.dt, oc.T_end), oc, 1)
-    else
-        return (lorenz_cfg, obs_cfg, N_ens)
+        return (LorenzConfig(lorenz_cfg.dt, oc.T_end), oc, 1, nothing)
+    else # :parallel
+        branch_cfg = LorenzConfig(lorenz_cfg.dt, W)
+        branch_oc  = ObservationConfig(0.0, W)
+        spinup_cfg = LorenzConfig(lorenz_cfg.dt, obs_cfg.T_start)
+        return (branch_cfg, branch_oc, N_ens, spinup_cfg)
     end
 end
 
@@ -69,9 +86,10 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
     theta_init = copy(theta)
     lambda = 1.0
 
-    cfg_k, oc_k, n_members = budget_windows(cfg, prob, N_ens)
+    cfg_k, oc_k, n_members, spinup_cfg = budget_windows(cfg, prob, N_ens)
     win = stats_window_indices(cfg_k, oc_k)
-    fwd_unit = cfg_k.T / lorenz_cfg.T     # integration cost in base-run equivalents
+    fwd_unit        = cfg_k.T / lorenz_cfg.T     # integration cost in base-run equivalents
+    fwd_unit_spinup = spinup_cfg === nothing ? 0.0 : spinup_cfg.T / lorenz_cfg.T
 
     score_model = make_score_model(cfg.score_kind, nx, cfg, rng_net)
 
@@ -83,17 +101,27 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
     final_params = fill(NaN, nu)
     final_output = fill(NaN, ny)
 
-    for outer_iter in 1:cfg.N_iter
-        x0p_all = x0 .+ ic_cov_sqrt * randn(rng, nx, n_members)
+    for outer_iter in 1:n_iter_for(cfg, N_ens)
+        # :parallel spins up once onto the CURRENT theta's attractor, then forks
+        # n_members branches from small perturbations of that shared state;
+        # :serial perturbs the (truth-attractor) x0 directly, since cfg_k
+        # already carries its own T_start burn-in for every member.
+        if spinup_cfg === nothing
+            x0p_all = x0 .+ ic_cov_sqrt * randn(rng, nx, n_members)
+        else
+            x_attr  = lorenz_solve(make_emc(prob, theta), x0, spinup_cfg)[:, end]
+            x0p_all = x_attr .+ ic_cov_sqrt * randn(rng, nx, n_members)
+            n_fwd_actual += fwd_unit_spinup
+        end
 
         Gs = Vector{Vector{Float64}}(undef, n_members)
         Xs = Vector{Matrix{Float64}}(undef, n_members)
-        for k in 1:n_members
+        Threads.@threads for k in 1:n_members
             out = lorenz_forward_with_states(make_emc(prob, theta), x0p_all[:, k], cfg_k, oc_k)
             Gs[k] = out.G
             Xs[k] = out.states[:, win]
-            n_fwd_actual += fwd_unit
         end
+        n_fwd_actual += n_members * fwd_unit
 
         cost_accum += N_ens                      # the residual/state evaluation
         G_bar = mean(Gs)
@@ -114,14 +142,14 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
         # the measure is smooth, AD where the tangent linear is stable, charged
         # honestly either way.  (Rare for L96 with these priors; common for L63.)
         if any(is_collapsed_window, Xs)
-            J_sum = zeros(ny, nu)
-            for k in 1:n_members
+            J_per_member = Vector{Matrix{Float64}}(undef, n_members)
+            Threads.@threads for k in 1:n_members
                 x0p_k  = x0p_all[:, k]
                 G_func = th -> lorenz_forward(make_emc(prob, th), x0p_k, cfg_k, oc_k)
-                J_sum += ForwardDiff.jacobian(G_func, theta)
-                n_fwd_actual += nu * fwd_unit
+                J_per_member[k] = ForwardDiff.jacobian(G_func, theta)
             end
-            Jt = R_inv_var * (J_sum / n_members)
+            n_fwd_actual += n_members * nu * fwd_unit
+            Jt = R_inv_var * (sum(J_per_member) / n_members)
             cost_accum += N_ens * nu             # matches LM's (nu+1) convention
             ad_iters += 1
         else
@@ -151,12 +179,12 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
         dtheta = qr(A_aug, ColumnNorm()) \ b_aug
 
         theta_trial = theta + dtheta
-        r_trial_sum = zeros(ny)
-        for k in 1:n_members
-            r_trial_sum += y - lorenz_forward(make_emc(prob, theta_trial), x0p_all[:, k], cfg_k, oc_k)
-            n_fwd_actual += fwd_unit
+        r_trial_per_member = Vector{Vector{Float64}}(undef, n_members)
+        Threads.@threads for k in 1:n_members
+            r_trial_per_member[k] = y - lorenz_forward(make_emc(prob, theta_trial), x0p_all[:, k], cfg_k, oc_k)
         end
-        rt_trial = R_inv_var * (r_trial_sum / n_members)
+        n_fwd_actual += n_members * fwd_unit
+        rt_trial = R_inv_var * (sum(r_trial_per_member) / n_members)
 
         rho = (norm(rt)^2 - norm(rt_trial)^2) / (norm(rt)^2 - norm(Jt * dtheta - rt)^2)
 
