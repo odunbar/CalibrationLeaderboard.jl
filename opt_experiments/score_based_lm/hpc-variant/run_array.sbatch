@@ -19,7 +19,7 @@
 #SBATCH --job-name=run_sblm
 #SBATCH --output=../output/slurm/run_%A_%a.out
 #SBATCH --error=../output/slurm/run_%A_%a.err
-#SBATCH --array=1-900
+#SBATCH --array=720
 #SBATCH --time=12:00:00
 #SBATCH --mem=24G
 #SBATCH --cpus-per-task=4
