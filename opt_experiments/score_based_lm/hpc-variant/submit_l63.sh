@@ -43,7 +43,7 @@ echo "=== Submitting run_array (L63, lm, after ${PRELIM_JID}) ==="
 RUN_JID=$(sbatch --parsable \
                  -A esm \
                  --job-name="run_${LABEL}" \
-                 --array=1-900 \
+                 --array=1-720 \
                  --dependency=afterok:${PRELIM_JID} \
                  --kill-on-invalid-dep=yes \
                  --export=ALL,SCRIPT=run_l63_sblm.jl,EXPERIMENT=l63,RUN_DATE=${RUN_DATE},SCORE_KIND=${SCORE_KIND},BUDGET_MODE=${BUDGET_MODE} \

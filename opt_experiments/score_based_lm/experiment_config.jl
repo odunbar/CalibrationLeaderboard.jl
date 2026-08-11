@@ -13,7 +13,7 @@ EXPERIMENT = experiments[1]
 #                               small-sample blowup at the cost of a clustering
 #                               step instead of a training loop
 #                   :gaussian — quasi-Gaussian FDT baseline, s(x) = -C^{-1}(x-mu)
-SCORE_KIND = :dsm
+SCORE_KIND = :kgmm
 
 # Budget mode (both charged outer_iter * N_ens forward-model evaluations, and
 # both integrate T_start once + N_ens*W of total model time):
