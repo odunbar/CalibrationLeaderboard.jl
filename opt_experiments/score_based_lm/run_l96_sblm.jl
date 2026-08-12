@@ -63,7 +63,7 @@ function budget_windows(cfg, prob, N_ens)
         return (LorenzConfig(lorenz_cfg.dt, oc.T_end), oc, 1, nothing)
     else # :parallel
         branch_cfg = LorenzConfig(lorenz_cfg.dt, W)
-        branch_oc  = ObservationConfig(0.0, W)
+        branch_oc  = ObservationConfig(lorenz_cfg.dt, W)
         spinup_cfg = LorenzConfig(lorenz_cfg.dt, obs_cfg.T_start)
         return (branch_cfg, branch_oc, N_ens, spinup_cfg)
     end
