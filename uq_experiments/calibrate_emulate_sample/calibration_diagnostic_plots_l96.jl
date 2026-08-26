@@ -54,7 +54,10 @@ prelim_file = joinpath(homedir, "output", "l96_computed_preliminaries_$(cfg.forc
 if !isfile(prelim_file)
     error("Preliminaries file not found: $(prelim_file). Run calibrate_l96.jl first.")
 end
-x0 = JLD2.load(prelim_file)["x0"]
+prelim = load_preliminaries(prelim_file)
+x0                     = prelim.x0
+lorenz_config_settings = prelim.lorenz_config_settings
+observation_config     = prelim.observation_config
 
 for ((force_case, N_ens, rng_idx), calib_filename_suffix) in zip(valid_file_items, valid_files)
 
@@ -85,6 +88,7 @@ for ((force_case, N_ens, rng_idx), calib_filename_suffix) in zip(valid_file_item
 
     N_ens = get_N_ens(ekpobj)
     n_par = length(truth_params_constrained)
+    nx    = length(x0)
     y     = get_obs(ekpobj)
     ny    = length(y)
 
@@ -287,5 +291,77 @@ for ((force_case, N_ens, rng_idx), calib_filename_suffix) in zip(valid_file_item
     plt = plot(p3, p_mid3, p4, layout = @layout [a b c])
     savefig(plt, joinpath(figure_save_directory, "solution_$(calib_filename_suffix)_full_ens.png"))
     savefig(plt, joinpath(figure_save_directory, "solution_$(calib_filename_suffix)_full_ens.pdf"))
+
+    # --- Hovmöller diagram (state vs. time) with initial/final ensembles overlaid
+    # on the forcing/mean/std panels (very transparent = initial, opaque = final) ---
+    dt_hov = lorenz_config_settings.dt
+    T_hov  = 200.0
+    xn_hov = lorenz_solve(truth_emc, x0, LorenzConfig(dt_hov, T_hov))
+    t_axis_hov = range(0, T_hov, length = size(xn_hov, 2))
+    plot_rows_hov = 1:max(1, round(Int, 1.0 / dt_hov)):length(t_axis_hov)
+
+    mean_truth = y[1:nx]
+    std_truth  = y[(nx + 1):(2 * nx)]
+    g_init  = get_g(ekpobj, 1)
+    g_final = get_g_final(ekpobj)
+    mean_init_ens  = g_init[1:nx, :]
+    std_init_ens   = g_init[(nx + 1):(2 * nx), :]
+    mean_final_ens = g_final[1:nx, :]
+    std_final_ens  = g_final[(nx + 1):(2 * nx), :]
+
+    init_color, init_alpha   = :gray, 0.25
+    final_color, final_alpha = :green, 0.4
+    line_width_hov = 5
+    ensemble_line_width = 1
+    gr(
+        size = (2400, 1000),
+        guidefontsize = 22, tickfontsize = 20, colorbar_titlefontsize = 20,
+        legendfontsize = 20,
+        margin = 8mm,
+    )
+
+    forcing_panel = plot(
+        ens_init_forcings, 1:nx;
+        xlabel = "Forcing", ylabel = "State",
+        xticks = false, grid = false, linewidth = ensemble_line_width, color = init_color, linealpha = init_alpha,
+        ylims = (1, nx), label = "",
+        left_margin = 16mm, bottom_margin = 14mm,
+    )
+    plot!(forcing_panel, ens_final_forcings, 1:nx; color = final_color, linealpha = final_alpha, linewidth = ensemble_line_width, label = "")
+    plot!(forcing_panel, truth_forcing, 1:nx; color = :black, linewidth = line_width_hov, label = "truth")
+
+    hovmoller = heatmap(
+        t_axis_hov[plot_rows_hov], 1:nx, xn_hov[:, plot_rows_hov];
+        xlabel = "Time", ylabel = "",
+        yticks = false, grid = false,
+        c = :balance, colorbar = false,
+        bottom_margin = 14mm,
+    )
+    vspan!(hovmoller, [observation_config.T_start, observation_config.T_end]; color = :green, alpha = 0.15, label = "Observed window")
+
+    mean_panel = plot(
+        mean_init_ens, 1:nx;
+        xlabel = "Observed mean", ylabel = "",
+        xticks = false, yticks = false, grid = false, linewidth = ensemble_line_width, color = init_color, linealpha = init_alpha,
+        ylims = (1, nx), legend = false,
+        bottom_margin = 14mm,
+    )
+    plot!(mean_panel, mean_final_ens, 1:nx; color = final_color, linealpha = final_alpha, linewidth = ensemble_line_width, label = "")
+    plot!(mean_panel, mean_truth, 1:nx; color = :black, linewidth = line_width_hov, label = "")
+
+    std_panel = plot(
+        std_init_ens, 1:nx;
+        xlabel = "Observed std.", ylabel = "",
+        xticks = false, yticks = false, grid = false, linewidth = ensemble_line_width, color = init_color, linealpha = init_alpha,
+        ylims = (1, nx), legend = false,
+        bottom_margin = 14mm,
+    )
+    plot!(std_panel, std_final_ens, 1:nx; color = final_color, linealpha = final_alpha, linewidth = ensemble_line_width, label = "")
+    plot!(std_panel, std_truth, 1:nx; color = :black, linewidth = line_width_hov, label = "")
+
+    l_hov = @layout [a{0.14w} b{0.58w} c{0.14w} d{0.14w}]
+    fig_hov = plot(forcing_panel, hovmoller, mean_panel, std_panel; layout = l_hov, link = :y)
+    savefig(fig_hov, joinpath(figure_save_directory, "hovmoller_$(calib_filename_suffix).png"))
+    savefig(fig_hov, joinpath(figure_save_directory, "hovmoller_$(calib_filename_suffix).pdf"))
 
 end
