@@ -2,7 +2,7 @@
 # Submit the score-based LM L96 const-force pipeline.
 # Dependency chain: preliminaries →(afterok)→ run_array →(afterok)→ leaderboard
 #
-# N_TASKS = length(N_ens_sizes) * length(rmse_targets) * n_repeats = 3 * 3 * 100 = 900
+# N_TASKS = length(N_ens_sizes) * length(rmse_targets) * n_repeats = 10 * 3 * 30 = 900
 # If N_ens_sizes, rmse_targets or n_repeats change in experiment_config.jl, update --array below.
 #
 # Usage: bash submit_l96_const.sh [EXP_ID]
@@ -42,7 +42,7 @@ echo "=== Submitting run_array (L96 const-force, lm, after ${PRELIM_JID}) ==="
 RUN_JID=$(sbatch --parsable \
                  -A esm \
                  --job-name="run_${LABEL}" \
-                 --array=1-720 \
+                 --array=1-900 \
                  --dependency=afterok:${PRELIM_JID} \
                  --kill-on-invalid-dep=yes \
                  --export=ALL,SCRIPT=run_l96_sblm.jl,EXPERIMENT=l96_const,RUN_DATE=${RUN_DATE},SCORE_KIND=${SCORE_KIND},BUDGET_MODE=${BUDGET_MODE} \

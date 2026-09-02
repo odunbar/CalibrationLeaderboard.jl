@@ -192,7 +192,7 @@ SCORE_KIND=kgmm BUDGET_MODE=serial   bash submit_l63.sh
 SCORE_KIND=gaussian bash submit_l96_const.sh
 ```
 
-`N_TASKS = length(N_ens_sizes) * length(rmse_targets) * n_repeats = 3*3*100 = 900`.
+`N_TASKS = length(N_ens_sizes) * length(rmse_targets) * n_repeats = 10*3*30 = 900` (all cases).
 If any of those change in `experiment_config.jl`, update `--array` in
 `run_array.sbatch` **and** in every `submit_l*.sh`.
 

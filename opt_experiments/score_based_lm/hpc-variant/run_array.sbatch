@@ -2,7 +2,7 @@
 # SLURM array job for score-based LM (GFDT) runs (L63 or L96).
 # One task per (N_ens, rng_idx) cell.
 #
-# N_TASKS (all cases):   length(N_ens_sizes) * length(rmse_targets) * n_repeats = 3 * 3 * 100 = 900
+# N_TASKS (all cases):   length(N_ens_sizes) * length(rmse_targets) * n_repeats = 10 * 3 * 30 = 900
 # If N_ens_sizes, rmse_targets or n_repeats change in experiment_config.jl, update --array
 # in the submit scripts (which override this default with --array=1-N).
 #
@@ -19,7 +19,7 @@
 #SBATCH --job-name=run_sblm
 #SBATCH --output=../output/slurm/run_%A_%a.out
 #SBATCH --error=../output/slurm/run_%A_%a.err
-#SBATCH --array=720
+#SBATCH --array=1-900
 #SBATCH --time=8:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4

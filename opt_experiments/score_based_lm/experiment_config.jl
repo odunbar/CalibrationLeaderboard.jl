@@ -52,12 +52,10 @@ run_date = haskey(ENV, "RUN_DATE") ? Date(ENV["RUN_DATE"]) : today()
 function experiment_config(case::Symbol)
     n_repeats    = 30
     rmse_targets = [1.0, 1.1, 1.2]
-    N_ens_sizes  = [1, 5, 10, 20, 30, 40, 50, 60]
     budget_total = 500     # outer_iter * N_ens is capped at this per cell
 
     common = (
         rmse_targets = rmse_targets,
-        N_ens_sizes  = N_ens_sizes,
         n_repeats    = n_repeats,
         budget_total = budget_total,
         run_date     = run_date,
@@ -77,6 +75,7 @@ function experiment_config(case::Symbol)
         # gives score relerr 0.30 / ||Xi|| 0.69 at sigma=0.05 but 0.15 / 0.24 at
         # sigma=0.2 -- too little smoothing leaves no learning signal at all.
         return (; model = "l63", force_case = nothing, nx = 3,
+                  N_ens_sizes = [1, 2, 3, 4, 5, 10, 20, 30, 40, 50],
                   tau_max = 5.0, lag_stride = 5,
                   # 300 epochs measured as good as 3000 at sigma=0.2 (relerr
                   # 0.148 vs 0.246), so more training does not buy accuracy here
@@ -87,6 +86,7 @@ function experiment_config(case::Symbol)
                   common...)
     elseif case == :l96_const
         return (; model = "l96", force_case = "const-force", nx = 40,
+                  N_ens_sizes = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30],
                   tau_max = 5.0, lag_stride = 5,
                   sigma = 0.025, hidden = 128, base = 16,
                   epochs_init = 150, epochs_warm = 20,
@@ -94,6 +94,7 @@ function experiment_config(case::Symbol)
                   common...)
     elseif case == :l96_vec
         return (; model = "l96", force_case = "vec-force", nx = 40,
+                  N_ens_sizes = [10, 20, 30, 40, 60, 80, 100, 120, 140, 160],
                   tau_max = 8.0, lag_stride = 5,
                   sigma = 0.025, hidden = 128, base = 16,
                   epochs_init = 150, epochs_warm = 20,
@@ -101,6 +102,7 @@ function experiment_config(case::Symbol)
                   common...)
     elseif case == :l96_flux
         return (; model = "l96", force_case = "flux-force", nx = 100,
+                  N_ens_sizes = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
                   tau_max = 8.0, lag_stride = 10,
                   sigma = 0.025, hidden = 128, base = 16,
                   epochs_init = 150, epochs_warm = 20,
@@ -155,7 +157,7 @@ end
 ########################################################################
 ###############  ARRAY-JOB HELPERS  ###################################
 ########################################################################
-# N_TASKS = length(N_ens_sizes) * length(rmse_targets) * n_repeats = 3 * 3 * 100 = 900
+# N_TASKS = length(N_ens_sizes) * length(rmse_targets) * n_repeats = 10 * 3 * 30 = 900 (all cases)
 flat_tasks(cfg) = [
     (N_ens, rmse_target, rng_idx)
     for N_ens in cfg.N_ens_sizes
