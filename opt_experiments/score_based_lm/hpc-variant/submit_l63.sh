@@ -20,7 +20,7 @@ RUN_DATE=$(date +%Y-%m-%d)
 #   SCORE_KIND  : dsm (learned score, DSM) | kgmm (learned score, KGMM) | gaussian (quasi-Gaussian FDT baseline)
 #   BUDGET_MODE : serial (one long window) | parallel (N_ens independent branches off one spin-up)
 SCORE_KIND=${SCORE_KIND:-dsm}
-BUDGET_MODE=${BUDGET_MODE:-serial}
+BUDGET_MODE=${BUDGET_MODE:-parallel}
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 cd "$DIR"
