@@ -16,7 +16,8 @@
 # limited by the raw pool size, and it assumes the pool is well-approximated
 # by a Gaussian in unconstrained space. Rounds before k0 (pool too small for a
 # non-degenerate covariance estimate) are skipped entirely — since the pool
-# only grows, once k0 is reached every later round also qualifies.
+# only grows, once k0 is reached every later round also qualifies. The
+# per-round sample loop runs on Threads.nthreads() threads (set JULIA_NUM_THREADS).
 #
 # Local (all cells):  EXPERIMENT=l96_const julia --project=. pushforward_from_posterior_l96.jl
 # Local (one cell):   EXPERIMENT=l96_const julia --project=. pushforward_from_posterior_l96.jl <task_index>
@@ -80,11 +81,14 @@ function pushforward_one(cfg, N_ens, rng_idx, output_dir)
         φ_samples = transform_unconstrained_to_constrained(prior, u_samples)
 
         @info "Pushforward k=$(k), N_ens=$(N_ens), rng_idx=$(rng_idx): $(n_pushforward_samples) Lorenz96 evals (Gaussian-resampled, pool size $(pool_sizes[k]))"
-        for s in 1:n_pushforward_samples
+        # Each s writes only output_arr[s, :, ki], so this is thread-safe as-is;
+        # the per-sample RNG keeps IC perturbations independent of thread scheduling.
+        Threads.@threads for s in 1:n_pushforward_samples
             emc = build_forcing(truth_phi, φ_samples[:, s], phi_structure, sample_range)
+            ic_rng = MersenneTwister(hash((rng_idx, k, s)))
             output_arr[s, :, ki] = lorenz_forward(
                 emc,
-                x0 .+ ic_cov_sqrt * rand(rng, Normal(0.0, 1.0), nx),
+                x0 .+ ic_cov_sqrt * rand(ic_rng, Normal(0.0, 1.0), nx),
                 lorenz_config_settings,
                 observation_config,
             )

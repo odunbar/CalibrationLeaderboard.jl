@@ -75,8 +75,28 @@ julia --project=. calibrate_l63.jl 1
 EXPERIMENT=l96_vec julia --project=. calibrate_l96.jl 5
 ```
 
-No HPC/SLURM variant has been scaffolded yet; add one with the
-`slurm-pipeline-handler` skill when needed.
+## HPC (Caltech Resnick cluster, SLURM)
+
+`hpc-variant/` holds only sbatch and submit scripts — there is a single copy
+of every `.jl` script and of `experiment_config.jl` (this directory), shared
+verbatim between local and HPC runs. See `hpc-variant/README.md` for the full
+dependency graph, sbatch/submit script reference, and manual submission
+examples. Quick start:
+
+```bash
+cd hpc-variant
+bash submit_precompile.sh                    # once, or after any package update
+bash submit_l63.sh
+bash submit_l96_const.sh
+bash submit_l96_vec.sh
+bash submit_l96_flux.sh
+```
+
+`calibrate_array.sbatch` indexes by `rng_idx` alone (`--array=1-20`, since one
+task computes every `N_ens_sizes` entry from a single flat draw stream);
+`pushforward_from_posterior.sbatch`/`exp_to_leaderboard.sbatch` still index by
+`(N_ens, rng_idx)` (`--array=1-180`). Update these bounds if `n_repeats` or
+`N_ens_sizes` change in `experiment_config.jl`.
 
 ## Leaderboard metric
 

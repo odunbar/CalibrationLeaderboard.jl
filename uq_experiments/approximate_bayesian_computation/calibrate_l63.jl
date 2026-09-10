@@ -6,6 +6,7 @@
 #
 # Per rng_idx, draw one flat stream of N_ens_max*N_iter candidates; for each
 # N_ens, phi_stored[k] is the accepted pool among the first N_ens*k draws.
+# The candidate loop runs on Threads.nthreads() threads (set JULIA_NUM_THREADS).
 #
 # Local (all cells):  julia --project=. calibrate_l63.jl
 # Local (one cell):   julia --project=. calibrate_l63.jl <rng_idx>
@@ -62,23 +63,24 @@ function calibrate_one(cfg, rng_idx, output_dir)
     u_candidates = construct_initial_ensemble(rng, prior, M_max)                      # nu x M_max, unconstrained
     θ_candidates = transform_unconstrained_to_constrained(prior, u_candidates)        # nu x M_max, constrained
 
-    accepted_idx    = Int[]                            # draw indices (within 1:M_max) accepted, increasing
-    accepted_params = Matrix{Float64}(undef, nu, 0)     # nu x n_accepted_total, in draw order
-    for m in 1:M_max
+    # Each m writes only accepted_mask[m], so this is thread-safe as-is; the
+    # per-draw RNG keeps IC perturbations independent of thread scheduling.
+    accepted_mask = falses(M_max)
+    Threads.@threads for m in 1:M_max
         θ_m = θ_candidates[:, m]
+        ic_rng = MersenneTwister(hash((rng_idx, m)))
         G_m = lorenz_forward(
             EnsembleMemberConfig(θ_m),
-            x0 .+ ic_cov_sqrt * rand(rng, Normal(0.0, 1.0), nx),
+            x0 .+ ic_cov_sqrt * rand(ic_rng, Normal(0.0, 1.0), nx),
             lorenz_config_settings,
             observation_config,
         )
         Δ = G_m - y
         implaus_sq = dot(Δ, Σ_abc \ Δ)
-        if implaus_sq <= threshold
-            push!(accepted_idx, m)
-            accepted_params = hcat(accepted_params, θ_m)
-        end
+        accepted_mask[m] = implaus_sq <= threshold
     end
+    accepted_idx    = findall(accepted_mask)      # increasing, within 1:M_max
+    accepted_params = θ_candidates[:, accepted_idx]
 
     # ── Per N_ens, phi_stored[k] = accepted pool among the first N_ens*k draws ──
     for N_ens in cfg.N_ens_sizes
