@@ -35,3 +35,6 @@ JuliaLocalPreferences.toml
 
 # emacs
 *~
+
+# slow directory to enumerate
+**/output/
