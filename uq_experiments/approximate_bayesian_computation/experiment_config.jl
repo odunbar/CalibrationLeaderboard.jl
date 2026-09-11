@@ -46,6 +46,7 @@ function experiment_config(case::Symbol)
             N_iter         = 500,
             n_repeats      = n_repeats,
             max_iter       = 500,
+            n_params       = 2,   # (rho, beta) — see calibrate_l63.jl
             alpha_reject   = alpha_reject,
             calibrate_date = calibrate_date,
         )
@@ -57,6 +58,7 @@ function experiment_config(case::Symbol)
             N_iter         = 500,
             n_repeats      = n_repeats,
             max_iter       = 500,
+            n_params       = 1,   # scalar forcing — see calibrate_l96.jl force_case_setup
             alpha_reject   = alpha_reject,
             calibrate_date = calibrate_date,
         )
@@ -68,6 +70,7 @@ function experiment_config(case::Symbol)
             N_iter         = 111,
             n_repeats      = n_repeats,
             max_iter       = 111,
+            n_params       = 40,  # nx — see calibrate_l96.jl force_case_setup
             alpha_reject   = alpha_reject,
             calibrate_date = calibrate_date,
         )
@@ -79,6 +82,7 @@ function experiment_config(case::Symbol)
             N_iter         = 111,
             n_repeats      = n_repeats,
             max_iter       = 111,
+            n_params       = 61,  # nu — see calibrate_l96.jl force_case_setup
             alpha_reject   = alpha_reject,
             calibrate_date = calibrate_date,
         )

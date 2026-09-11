@@ -75,12 +75,21 @@ function main()
         end
         has_pushforward && push!(valid_items, (N_ens, rng_idx))
     end
-    isempty(valid_items) && error("No cells with pushforward output found in $(output_dir). Run calibrate + pushforward first.")
+
+    # No cell's accepted-sample pool ever reached the minimum size needed for
+    # a Gaussian pushforward fit within the evaluation budget (cfg.N_ens_sizes
+    # x cfg.max_iter) — every array stays NaN below, and we still write both
+    # netcdfs (rather than erroring) so the leaderboard shows this experiment
+    # ran and failed, instead of silently having no output at all.
+    ran_out_of_budget = isempty(valid_items)
+    if ran_out_of_budget
+        @warn "No cells with pushforward output found in $(output_dir) — writing NaN-filled leaderboard netcdf (posterior pool never reached the minimum size within the evaluation budget)."
+    end
 
     # ── Determine dimensions from a first pass over valid cells ────────
-    n_k      = 0
-    n_params = 0
-    n_output = 0
+    n_k      = ran_out_of_budget ? cfg.max_iter : 0
+    n_params = ran_out_of_budget ? cfg.n_params : 0
+    n_output = ran_out_of_budget ? 1 : 0   # unused placeholder dim size (see output_dim below)
     for (N_ens, rng_idx) in valid_items
         fn = joinpath(output_dir, results_filename(cfg, N_ens, rng_idx))
         phi1, pf_output, pf_k_values = JLD2.jldopen(fn, "r") do f
@@ -91,44 +100,51 @@ function main()
         n_output = max(n_output, size(pf_output, 2))
     end
 
-    # ── R-whitened PCA basis (y, R are shared across all cells of this experiment) ─
-    fn1 = joinpath(output_dir, results_filename(cfg, valid_items[1]...))
-    y, R_obs = JLD2.jldopen(f -> (f["y"], f["R"]), fn1, "r")
-
-    basis = whitened_pca_basis(R_obs, R_variance_retain)
-    k_R   = basis.k_R
-    yw    = whiten_vector(basis, y)
-
-    @info "R-whitened PCA: retaining $(k_R)/$(n_output) modes ($(round(100*basis.cum_var[k_R]; digits=2))% variance)"
-
     # ── Pre-allocate ────────────────────────────────────────────────────
     post_mean_arr       = fill(NaN, n_rng, n_ens, n_k, n_params)
     post_cov_arr        = fill(NaN, n_rng, n_ens, n_k, n_params, n_params)
     pool_size_arr        = fill(NaN, n_rng, n_ens, n_k)
     output_coverage_arr = fill(NaN, n_rng, n_ens, n_k, n_marginal_coverage_quantiles)
 
-    # ── Main loop over cells ────────────────────────────────────────────
-    for (N_ens, rng_idx) in valid_items
-        fn = joinpath(output_dir, results_filename(cfg, N_ens, rng_idx))
-        phi_stored, pool_sizes, pf_output, pf_k_values = JLD2.jldopen(fn, "r") do f
-            f["phi_stored"], f["pool_sizes"], f["pushforward_output_samples"], f["pushforward_k_values"]
-        end
-        # phi_stored: [round][param, pool_member], accepted-sample pool accumulated through round k (1-indexed, no offset)
-        # pf_output: (n_pushforward_samples, n_output, K); Gaussian-resampled from the pool
-        # (see pushforward_from_posterior_l*.jl), so its sample count is fixed across all cells
+    if ran_out_of_budget
+        # No y/R/pushforward samples exist anywhere for this experiment, so
+        # the R-whitened PCA basis can't be computed; output_dim is declared
+        # but unused by any variable below, so 1 is a harmless placeholder.
+        k_R = 1
+    else
+        # ── R-whitened PCA basis (y, R are shared across all cells of this experiment) ─
+        fn1 = joinpath(output_dir, results_filename(cfg, valid_items[1]...))
+        y, R_obs = JLD2.jldopen(f -> (f["y"], f["R"]), fn1, "r")
 
-        ri = findfirst(==(rng_idx), rng_idxs)
-        ei = findfirst(==(N_ens), N_enss)
+        basis = whitened_pca_basis(R_obs, R_variance_retain)
+        k_R   = basis.k_R
+        yw    = whiten_vector(basis, y)
 
-        for (ki, k) in enumerate(pf_k_values)
-            pool = phi_stored[k]  # nu x pool_size(k)
-            post_mean_arr[ri, ei, k, :]   = vec(mean(pool, dims = 2))
-            post_cov_arr[ri, ei, k, :, :] = cov(pool, dims = 2)
-            pool_size_arr[ri, ei, k]      = pool_sizes[k]
+        @info "R-whitened PCA: retaining $(k_R)/$(n_output) modes ($(round(100*basis.cum_var[k_R]; digits=2))% variance)"
 
-            os = pf_output[:, :, ki]   # (n_pushforward_samples, n_output)
-            sw = whiten_samples(basis, os)   # (n_pushforward_samples, k_R), R-whitened PCA
-            output_coverage_arr[ri, ei, k, :] = marginal_coverage(sw, yw, marginal_coverage_quantiles)
+        # ── Main loop over cells ────────────────────────────────────────
+        for (N_ens, rng_idx) in valid_items
+            fn = joinpath(output_dir, results_filename(cfg, N_ens, rng_idx))
+            phi_stored, pool_sizes, pf_output, pf_k_values = JLD2.jldopen(fn, "r") do f
+                f["phi_stored"], f["pool_sizes"], f["pushforward_output_samples"], f["pushforward_k_values"]
+            end
+            # phi_stored: [round][param, pool_member], accepted-sample pool accumulated through round k (1-indexed, no offset)
+            # pf_output: (n_pushforward_samples, n_output, K); Gaussian-resampled from the pool
+            # (see pushforward_from_posterior_l*.jl), so its sample count is fixed across all cells
+
+            ri = findfirst(==(rng_idx), rng_idxs)
+            ei = findfirst(==(N_ens), N_enss)
+
+            for (ki, k) in enumerate(pf_k_values)
+                pool = phi_stored[k]  # nu x pool_size(k)
+                post_mean_arr[ri, ei, k, :]   = vec(mean(pool, dims = 2))
+                post_cov_arr[ri, ei, k, :, :] = cov(pool, dims = 2)
+                pool_size_arr[ri, ei, k]      = pool_sizes[k]
+
+                os = pf_output[:, :, ki]   # (n_pushforward_samples, n_output)
+                sw = whiten_samples(basis, os)   # (n_pushforward_samples, k_R), R-whitened PCA
+                output_coverage_arr[ri, ei, k, :] = marginal_coverage(sw, yw, marginal_coverage_quantiles)
+            end
         end
     end
 
@@ -142,7 +158,11 @@ function main()
         output_iters_to_target[ri, ei, :, :]  = iters
     end
 
-    output_coverage_description = "R-whitened PCA marginal coverage: fraction of whitened output dims d where ỹ[d] ≤ q_p of whitened pushforward samples. Whitening: x̃_d = (Vᵀx)_d / √λ_d where R = VΛVᵀ. Retained $(k_R)/$(n_output) R-eigenmodes ($(round(100*basis.cum_var[k_R]; digits=1))% variance, threshold $(R_variance_retain))."
+    output_coverage_description = if ran_out_of_budget
+        "R-whitened PCA marginal coverage — all NaN: no cell's accepted-sample pool reached the minimum size needed for a Gaussian pushforward fit within the evaluation budget (cfg.N_ens_sizes x cfg.max_iter), so this experiment has no pushforward output. Run recorded as failed rather than omitted."
+    else
+        "R-whitened PCA marginal coverage: fraction of whitened output dims d where ỹ[d] ≤ q_p of whitened pushforward samples. Whitening: x̃_d = (Vᵀx)_d / √λ_d where R = VΛVᵀ. Retained $(k_R)/$(n_output) R-eigenmodes ($(round(100*basis.cum_var[k_R]; digits=1))% variance, threshold $(R_variance_retain))."
+    end
     output_budget_description   = "Budget (N_ens·k_iter, i.e. total ABC forward-model evaluations) to first reach |S(q)−q| ≤ c·√(q(1−q)/N_y) per quantile q using R-whitened PCA coverage (N_y = $(k_R) effective whitened dims). NaN = not reached."
     output_iters_description    = "ABC rounds k_iter to first reach R-whitened PCA coverage target per quantile. NaN = not reached."
     ens_description             = "ABC batch size: number of i.i.d. prior draws forward-evaluated per round (post_mean/post_cov come from the accepted-sample pool accumulated across rounds; output_coverage is instead computed from a fixed-size Gaussian resample of this pool, see pushforward_from_posterior_l*.jl)"
@@ -153,6 +173,7 @@ function main()
 
     # ── Write full netcdf (param-space mean/cov + coverage) ─────────────
     ds = NCDataset(nc_save_path, "c")
+    ds.attrib["run_status"] = ran_out_of_budget ? "failed: no pool reached the minimum size for a pushforward fit within the evaluation budget" : "ok"
 
     defDim(ds, "random_seed",       n_rng)
     defDim(ds, "ensemble_size",     n_ens)
@@ -211,6 +232,7 @@ function main()
 
     # ── Write minimal netcdf (coverage-derived fields only, no post_mean/post_cov) ─
     ds_min = NCDataset(nc_minimal_path, "c")
+    ds_min.attrib["run_status"] = ran_out_of_budget ? "failed: no pool reached the minimum size for a pushforward fit within the evaluation budget" : "ok"
 
     defDim(ds_min, "random_seed",       n_rng)
     defDim(ds_min, "ensemble_size",     n_ens)
