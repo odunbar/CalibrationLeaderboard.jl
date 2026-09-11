@@ -45,7 +45,7 @@ run_date = haskey(ENV, "RUN_DATE") ? Date(ENV["RUN_DATE"]) : today()
 function experiment_config(case::Symbol)
     n_repeats    = 30
     rmse_targets = [1.0, 1.1, 1.2]
-    budget_total = 500     # outer_iter * N_ens is capped at this per cell
+    budget_total = 5_000   # outer_iter * N_ens is capped at this per cell
 
     common = (
         rmse_targets = rmse_targets,
