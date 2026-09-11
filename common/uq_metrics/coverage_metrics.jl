@@ -66,7 +66,14 @@ unwhiten_samples(basis::WhitenedPCABasis, Z::AbstractMatrix) = Matrix((basis.V *
 # Returns marginal coverage fraction at each quantile in `quantile_probs`.
 function marginal_coverage(whitened_samples::AbstractMatrix, whitened_truth::AbstractVector, quantile_probs)
     k_R = length(whitened_truth)
-    return [mean(whitened_truth[d] <= quantile(whitened_samples[:, d], q) for d in 1:k_R) for q in quantile_probs]
+    good = vec(.!any(isnan, whitened_samples; dims = 2))
+    n_bad = length(good) - count(good)
+    if n_bad > 0
+        @warn "marginal_coverage: dropping $(n_bad)/$(length(good)) pushforward samples with NaN whitened output"
+    end
+    ws = whitened_samples[good, :]
+    isempty(ws) && return fill(NaN, length(quantile_probs))
+    return [mean(whitened_truth[d] <= quantile(ws[:, d], q) for d in 1:k_R) for q in quantile_probs]
 end
 
 # coverage_by_k[k]: coverage vector (one entry per quantile in
