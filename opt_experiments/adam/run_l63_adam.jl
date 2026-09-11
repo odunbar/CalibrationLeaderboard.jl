@@ -61,11 +61,11 @@ function run_one(cfg, rmse_target, rng_idx, problem)
     θ      = rand(rng, prior_dist)
     θ_init = copy(θ)
 
-    # Adam hyperparameters
-    α  = 0.001   # step size
-    β₁ = 0.9     # first-moment decay
-    β₂ = 0.999   # second-moment decay
-    ε  = 1e-8    # numerical stability
+    # Adam hyperparameters (per-case adam_alpha; see experiment_config.jl)
+    α  = cfg.adam_alpha
+    β₁ = cfg.adam_beta1
+    β₂ = cfg.adam_beta2
+    ε  = cfg.adam_eps
 
     m = zeros(nu)   # first moment (mean)
     v = zeros(nu)   # second moment (uncentred variance)

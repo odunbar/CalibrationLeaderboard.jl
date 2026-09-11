@@ -60,45 +60,58 @@ function experiment_config(case::Symbol)
         kgmm_ridge   = 0.1,   # per-cluster covariance shrinkage toward the global
                               # covariance; K itself is chosen adaptively from the
                               # actual window size at fit time (see score_gfdt.jl)
-        # Adam hyperparameters -- kept identical to opt_experiments/adam so the
-        # only thing that differs between the two leaderboards is the Jacobian.
-        adam_alpha = 0.001,   # step size
+        # Adam hyperparameters -- beta1/beta2/eps kept identical to
+        # opt_experiments/adam; adam_alpha is set per-case below (NOT shared),
+        # since a single global 0.001 (copied unchanged from opt_experiments/adam,
+        # which optimises a differently-scaled residual) leaves Adam unable to
+        # traverse even the l63/l96_const prior within its iteration budget --
+        # see run_l63_sbadam.jl's failure-rate note. Sized to ~0.25x the case's
+        # mean prior std, so a run of consistent-sign steps crosses ~1 prior std
+        # in ~4 outer iterations.
         adam_beta1 = 0.9,     # first-moment decay
         adam_beta2 = 0.999,   # second-moment decay
         adam_eps   = 1e-8,    # numerical stability
     )
 
     if case == :l63
+        # prior std = [0.15, 0.5] (log rho, log beta) -> mean 0.325
         return (; model = "l63", force_case = nothing, nx = 3,
                   N_ens_sizes = [1, 2, 3, 4, 5, 10, 20, 30, 40, 50],
                   tau_max = 5.0, lag_stride = 5,
                   sigma = 0.2, hidden = 128, base = 16,
                   epochs_init = 500, epochs_warm = 50,
                   lr_init = 1e-3, lr_warm = 3e-4, batch = 256, weight_decay = 0.0,
+                  adam_alpha = 0.08,
                   common...)
     elseif case == :l96_const
+        # prior std = 0.4 (log forcing)
         return (; model = "l96", force_case = "const-force", nx = 40,
                   N_ens_sizes = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30],
                   tau_max = 5.0, lag_stride = 5,
                   sigma = 0.025, hidden = 128, base = 16,
                   epochs_init = 150, epochs_warm = 20,
                   lr_init = 8e-4, lr_warm = 3e-4, batch = 128, weight_decay = 1e-4,
+                  adam_alpha = 0.1,
                   common...)
     elseif case == :l96_vec
+        # prior std = psig = 3.0 (per-component forcing)
         return (; model = "l96", force_case = "vec-force", nx = 40,
                   N_ens_sizes = [10, 20, 30, 40, 60, 80, 100, 120, 140, 160],
                   tau_max = 8.0, lag_stride = 5,
                   sigma = 0.025, hidden = 128, base = 16,
                   epochs_init = 150, epochs_warm = 20,
                   lr_init = 8e-4, lr_warm = 3e-4, batch = 128, weight_decay = 1e-4,
+                  adam_alpha = 0.75,
                   common...)
     elseif case == :l96_flux
+        # prior std = 0.1 (NN weight space)
         return (; model = "l96", force_case = "flux-force", nx = 100,
                   N_ens_sizes = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
                   tau_max = 8.0, lag_stride = 10,
                   sigma = 0.025, hidden = 128, base = 16,
                   epochs_init = 150, epochs_warm = 20,
                   lr_init = 8e-4, lr_warm = 3e-4, batch = 128, weight_decay = 1e-4,
+                  adam_alpha = 0.025,
                   common...)
     else
         throw(ArgumentError("Unknown experiment: $case"))

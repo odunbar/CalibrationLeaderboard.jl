@@ -18,7 +18,17 @@ function experiment_config(case::Symbol)
     rmse_targets = [1.0, 1.1, 1.2]
     N_iter      = 10000   # Adam needs more iterations than LM
 
+    # Adam hyperparameters -- beta1/beta2/eps shared; adam_alpha is set per-case
+    # below (NOT shared), sized to ~0.25x the case's mean prior std so a run of
+    # consistent-sign steps crosses ~1 prior std in ~4 outer iterations (a single
+    # global 0.001 leaves Adam unable to traverse the l63/l96_const prior even
+    # over N_iter=10000 steps; see opt_experiments/score_based_adam for the same fix).
+    adam_beta1 = 0.9
+    adam_beta2 = 0.999
+    adam_eps   = 1e-8
+
     if case == :l63
+        # prior std = [0.15, 0.5] (log rho, log beta) -> mean 0.325
         return (
             model        = "l63",
             force_case   = nothing,
@@ -26,8 +36,13 @@ function experiment_config(case::Symbol)
             n_repeats    = n_repeats,
             N_iter       = N_iter,
             run_date     = run_date,
+            adam_alpha   = 0.08,
+            adam_beta1   = adam_beta1,
+            adam_beta2   = adam_beta2,
+            adam_eps     = adam_eps,
         )
     elseif case == :l96_const
+        # prior std = 0.4 (log forcing)
         return (
             model        = "l96",
             force_case   = "const-force",
@@ -35,8 +50,13 @@ function experiment_config(case::Symbol)
             n_repeats    = n_repeats,
             N_iter       = N_iter,
             run_date     = run_date,
+            adam_alpha   = 0.1,
+            adam_beta1   = adam_beta1,
+            adam_beta2   = adam_beta2,
+            adam_eps     = adam_eps,
         )
     elseif case == :l96_vec
+        # prior std = psig = 3.0 (per-component forcing)
         return (
             model        = "l96",
             force_case   = "vec-force",
@@ -44,8 +64,13 @@ function experiment_config(case::Symbol)
             n_repeats    = n_repeats,
             N_iter       = N_iter,
             run_date     = run_date,
+            adam_alpha   = 0.75,
+            adam_beta1   = adam_beta1,
+            adam_beta2   = adam_beta2,
+            adam_eps     = adam_eps,
         )
     elseif case == :l96_flux
+        # prior std = 0.1 (NN weight space)
         return (
             model        = "l96",
             force_case   = "flux-force",
@@ -53,6 +78,10 @@ function experiment_config(case::Symbol)
             n_repeats    = n_repeats,
             N_iter       = N_iter,
             run_date     = run_date,
+            adam_alpha   = 0.025,
+            adam_beta1   = adam_beta1,
+            adam_beta2   = adam_beta2,
+            adam_eps     = adam_eps,
         )
     else
         throw(ArgumentError("Unknown experiment: $case"))
