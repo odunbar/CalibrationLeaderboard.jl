@@ -136,6 +136,8 @@ function history_matching_one(cfg, N_ens, rng_idx, output_dir)
     posteriors_by_k = Dict{Int, Matrix{Float64}}()
     n_waves_completed = 0
     theta_ens = lhs_prior_sample(setup.prior_mean, setup.prior_cov_sqrt, N_ens, rng; constraint_transform = setup.constraint_transform)
+    theta_accum = zeros(nu, 0)
+    results_accum = zeros(0, n_out)
 
     for wave in 1:cfg.max_waves
         results = zeros(N_ens, n_out)
@@ -144,7 +146,15 @@ function history_matching_one(cfg, N_ens, rng_idx, output_dir)
             results[j, :] = lorenz_forward(forcing_j, x0 .+ ic_cov_sqrt * randn(rng, nx), lorenz_cfg, obs_cfg)
         end
 
-        wave_gps = fit_wave_gps(prob, theta_ens, results; ensemble_retain_var = ensemble_retain_var)
+        if cfg.accumulate_training
+            theta_accum, results_accum = update_training_accumulator(
+                prob, waves, threshold, theta_accum, results_accum, theta_ens, results,
+            )
+            train_theta, train_results = theta_accum, results_accum
+        else
+            train_theta, train_results = theta_ens, results
+        end
+        wave_gps = fit_wave_gps(prob, train_theta, train_results; ensemble_retain_var = ensemble_retain_var)
         push!(waves, wave_gps)
         n_waves_completed = wave
 

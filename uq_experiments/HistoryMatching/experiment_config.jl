@@ -52,6 +52,17 @@ method_key = "history-matching"
 #                           ~26/40, a real reduction traded for treating the
 #                           discarded low-variance prior directions as fixed
 #                           at their prior mean.
+#    accumulate_training:   if true (the default — matches standard History
+#                           Matching practice, e.g. Vernon/Craig/Goldstein-
+#                           style wave methodology), each wave's GP is fit on
+#                           this wave's ensemble PLUS every earlier wave's run
+#                           still inside the NROY region defined by all waves
+#                           so far, rather than only that wave's own N_ens
+#                           points (see history_matching_core.jl's
+#                           update_training_accumulator). Set to false to
+#                           revert to the old fresh-per-wave fit if the
+#                           growing training set makes GP fitting too slow at
+#                           late waves.
 function experiment_config(case::Symbol)
     n_repeats = 20
     common = (
@@ -61,6 +72,7 @@ function experiment_config(case::Symbol)
         max_rejection_samples = 1_000_000,   # matches calib_race_hm_l63.py's own max_samples default
         retain_var = 0.99,
         retain_var_input = 0.9,
+        accumulate_training = true,
         calibrate_date = calibrate_date,
     )
 

@@ -12,6 +12,14 @@
 # GP fitting uses raw GaussianProcesses.jl (GPE, ARD squared-exponential
 # kernel) — this method has no dependency on CalibrateEmulateSample.jl.
 #
+# By default (cfg.accumulate_training = true), each wave's GP is trained on a
+# GROWING dataset: this wave's freshly drawn ensemble plus every earlier
+# wave's run still inside the NROY region defined by all waves fit so far —
+# matching standard History Matching practice (see
+# update_training_accumulator below). Set cfg.accumulate_training = false to
+# revert to fitting each wave fresh on only that wave's own N_ens-sized
+# ensemble.
+#
 # Both the GP's input and output spaces are truncated-whitened before
 # fitting, reusing common/uq_metrics/coverage_metrics.jl's generic
 # WhitenedPCABasis machinery (the same math already used there for the
@@ -25,11 +33,13 @@
 #     l96_vec's correlated 40-D prior this alone captures most of its
 #     effective (much lower) dimensionality.
 #   - l96_flux ADDITIONALLY applies a wave-LOCAL PCA on top of the
-#     prior-whitened coordinates, fit fresh from that wave's own ensemble —
-#     this is the one thing that cannot be known before seeing forward
-#     evaluations (the NN-weight symmetry collapse is a property of the
-#     forward map, not of the prior), so it must stay per-wave, using only
-#     that wave's own data (never a later wave's).
+#     prior-whitened coordinates, fit fresh each wave from whatever data that
+#     wave's GP is trained on (this wave's own ensemble, plus earlier waves'
+#     still-non-implausible runs if cfg.accumulate_training) — this is the one
+#     thing that cannot be known before seeing forward evaluations (the
+#     NN-weight symmetry collapse is a property of the forward map, not of
+#     the prior), so it must stay per-wave, using only data available at or
+#     before this wave (never a later wave's).
 
 using GaussianProcesses
 using LinearAlgebra
@@ -201,6 +211,41 @@ function is_nroy(prob::HMProblem, theta_batch::AbstractMatrix, waves::Vector{Wav
     nroy = falses(m)
     nroy[active_idx] .= true
     return nroy
+end
+
+########################################################################
+###############  Cumulative training-set accumulation  #################
+########################################################################
+
+# Standard Bayesian History Matching practice (Vernon/Craig/Goldstein-style
+# wave methodology; see e.g. the mogp-emulator docs' generic wave workflow:
+# "these runs, along with any non-implausible runs from previous waves, are
+# used to construct a more accurate emulator") trains each wave's GP on a
+# GROWING dataset — this wave's freshly drawn ensemble PLUS every earlier
+# wave's run that is still inside the NROY region defined by all waves fit so
+# far. A later wave's tighter implausibility bound can retroactively rule out
+# an earlier wave's point, so old points are re-filtered every wave rather
+# than kept unconditionally forever — this also keeps the accumulated
+# training set from growing without bound once NROY has genuinely
+# concentrated.
+#
+# `waves` here must be the waves fit BEFORE this one (i.e. waves 1:wave-1) —
+# the wave about to be fit can't filter its own training set. theta_ens/
+# results (this wave's own freshly drawn ensemble/forward results) are
+# appended unfiltered: they already passed every earlier wave's implausibility
+# test by construction, since they were themselves rejection-sampled against
+# `waves`.
+function update_training_accumulator(
+    prob::HMProblem, waves::Vector{WaveGPs}, threshold::Real,
+    theta_accum::AbstractMatrix, results_accum::AbstractMatrix,
+    theta_ens::AbstractMatrix, results::AbstractMatrix,
+)
+    if size(theta_accum, 2) > 0
+        keep = is_nroy(prob, theta_accum, waves, threshold)
+        theta_accum = theta_accum[:, keep]
+        results_accum = results_accum[keep, :]
+    end
+    return hcat(theta_accum, theta_ens), vcat(results_accum, results)
 end
 
 # Exact one-sided Poisson/Garwood upper confidence bound on the acceptance
