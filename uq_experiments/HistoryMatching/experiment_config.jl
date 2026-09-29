@@ -69,7 +69,7 @@ function experiment_config(case::Symbol)
         n_repeats = n_repeats,
         confidence = 0.95,
         n_candidate_batch = 2_000,
-        max_rejection_samples = 1_000_000,   # matches calib_race_hm_l63.py's own max_samples default
+        max_rejection_samples = 100_000_000,   # matches calib_race_hm_l63.py's own max_samples default
         retain_var = 0.99,
         retain_var_input = 0.9,
         accumulate_training = true,
