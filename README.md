@@ -19,6 +19,18 @@ Every method is run on the same set of experiments (the forward maps live in
 
 Each method directory selects an experiment via its `experiment_config.jl`.
 
+## Optimization and UQ methods
+
+The leaderboard is a *race*, and "optimization method" and "UQ method" each
+refer to an entry in one of two races on the experiments above:
+
+- **Optimization race** (`opt_experiments/`) — how much computational effort a
+  method needs to reach a target RMSE. A method wins by hitting the target
+  with fewer forward-map evaluations.
+- **UQ race** (`uq_experiments/`) — how much computational effort a method
+  needs to produce predicted quantiles that reach a target. A method wins by
+  reaching the target quantiles with fewer forward-map evaluations.
+
 ## Structure
 
 - `common/` — shared code used across experiments: forward maps
