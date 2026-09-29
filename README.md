@@ -7,20 +7,34 @@ the leaderboard is produced: given a forward map (e.g., Lorenz63, Lorenz96) and
 a calibration/UQ method, it runs the experiment, computes the agreed-upon
 metrics, and exports results in the format the leaderboard app consumes.
 
+## Experiments
+
+Every method is run on the same set of experiments (the forward maps live in
+`common/forward_maps/`):
+
+1. `l63` — Lorenz63, calibrating the model parameters.
+2. `l96_const` — Lorenz96 with a constant forcing.
+3. `l96_vec` — Lorenz96 with a vector of per-component forcings.
+4. `l96_flux` — Lorenz96 with a neural-network (Flux) forcing.
+
+Each method directory selects an experiment via its `experiment_config.jl`.
+
 ## Structure
 
 - `common/` — shared code used across experiments: forward maps
   (`forward_maps/`), optimization metrics (`opt_metrics/`), and UQ metrics
   (`uq_metrics/`). Anything more than one experiment needs should live here
   rather than being duplicated.
-- `opt_experiments/` — one directory per optimization method (e.g. Adam,
-  Levenberg-Marquardt, Ensemble Kalman Processes, Consensus-Based
-  Optimization), each following a common local/HPC layout.
-- `uq_experiments/` — one directory per UQ method (currently
-  Calibrate-Emulate-Sample), each following the same calibrate → emulate/sample
-  → pushforward → diagnostics/leaderboard pipeline shape, with local and
-  `hpc-variant` versions.
+- `opt_experiments/` — one directory per optimization method. Each is
+  self-contained and follows a common local/HPC layout.
+- `uq_experiments/` — one directory per UQ method. Each is self-contained and
+  follows the same local/HPC layout, with a pipeline suited to the method and
+  exported in the leaderboard format.
 - `src/` — the `CalibrationLeaderboard` package itself.
+
+Browse `opt_experiments/` and `uq_experiments/` for the methods currently
+included. Each method directory has its own `README.md` describing the method
+and how to run it.
 
 ## Designed to be extensible
 
