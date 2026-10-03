@@ -28,8 +28,8 @@
 #SBATCH --output=../output/slurm/run_%A_%a.out
 #SBATCH --error=../output/slurm/run_%A_%a.err
 #SBATCH --array=1-90
-#SBATCH --time=12:00:00
-#SBATCH --mem=16G
+#SBATCH --time=4:00:00
+#SBATCH --mem=12G
 #SBATCH --cpus-per-task=4
 #SBATCH --ntasks=1
 #SBATCH --constraint=cascadelake
