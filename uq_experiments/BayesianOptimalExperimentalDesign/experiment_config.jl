@@ -23,7 +23,10 @@ method_key = "boed"
 ########################################################################
 # Important dials:
 #    max_iters:             number of GBOED iterations; N_ens is both the initial LHS size and the fixed per-iteration acquisition batch size.
-#    n_posterior_samples:   ST-MCMC population size |X'| drawn each iteration (paper uses ~8092; much lower here for compute budget).
+#    n_posterior_samples:   ST-MCMC population size drawn each iteration (paper uses ~8092; much lower here for compute budget). 500, up from 50: with 50 the
+#                           posterior was degenerate in the 26-D l96_vec case (GBOED lagged ~3 waves behind a 500-particle run); tmcmc cost is ~linear in this.
+#    n_eig_posterior_samples: size of the random posterior subsample X' that the EIG objective (paper Eq. 8) targets. EIG costs ~n^3 per output mode, so this
+#                           stays at 50 even though ST-MCMC now draws more; candidate batches are still initialised from all n_posterior_samples draws.
 #    tmcmc_burnin/tmcmc_thin: passed directly to TransitionalMCMC.tmcmc, set below its own 20/3 defaults since they multiply per-stage cost.
 #    eig_optim_iters:       Fminbox(LBFGS())'s inner-solve iteration cap (per fixed barrier weight).
 #    eig_outer_iters:       Fminbox's outer barrier-loop iteration cap.
@@ -39,7 +42,8 @@ function experiment_config(case::Symbol)
     n_repeats = 20
     common = (
         n_repeats = n_repeats,
-        n_posterior_samples = 50,
+        n_posterior_samples = 500,
+        n_eig_posterior_samples = 50,
         tmcmc_burnin = 5,
         tmcmc_thin = 1,
         eig_optim_iters = 200,

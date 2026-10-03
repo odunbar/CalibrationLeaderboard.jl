@@ -152,10 +152,11 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
 
     for k in 2:cfg.max_iters
         hyperparams = extract_hyperparams(gps)
+        X_eig = subsample_columns(X_post, cfg.n_eig_posterior_samples, rng)   # EIG cost ~n^3 per mode; candidates still initialised from all of X_post
         X_cand0 = init_candidate_batch(X_post, N_ens, rng; strategy = cfg.batch_init_strategy)
         X_cand = timed_stage(
             () -> optimize_batch(
-                X_cand0, X_post, hyperparams, k_R_prior, N_ens;
+                X_cand0, X_eig, hyperparams, k_R_prior, N_ens;
                 bound_std = cfg.eig_bounds_std, iters = cfg.eig_optim_iters, outer_iters = cfg.eig_outer_iters,
                 jitter = cfg.eig_jitter, g_tol = cfg.eig_g_tol, f_reltol = cfg.eig_f_reltol, call_limit = cfg.eig_call_limit,
             ),

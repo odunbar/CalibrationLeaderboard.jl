@@ -251,6 +251,13 @@ function eig_objective(
     return total / length(hyperparams_by_dim)
 end
 
+# Random n-column subsample of the posterior draws X (k x n_post), or X itself if n >= n_post. The EIG objective costs ~n^3 per output mode,
+# so it targets this subsample (cfg.n_eig_posterior_samples) while ST-MCMC runs with the much larger cfg.n_posterior_samples.
+function subsample_columns(X::AbstractMatrix, n::Int, rng::AbstractRNG)
+    size(X, 2) <= n && return X
+    return X[:, randperm(rng, size(X, 2))[1:n]]
+end
+
 # Draws the starting batch (`cfg.batch_init_strategy`): :posterior_subsample subsamples B points from the current posterior X',
 # :fresh_lhs draws fresh in the truncated whitened space.
 function init_candidate_batch(X_post::AbstractMatrix, B::Int, rng::AbstractRNG; strategy::Symbol = :posterior_subsample)

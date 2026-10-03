@@ -58,7 +58,7 @@ forward model — so it also uses this file's new `unwhiten_vector`/
    coordinates' marginal prior exactly standard normal, so LHS is done
    directly in that space, then decoded back to raw parameter space).
    Forward-evaluate; fit one independent GP per whitened output statistic.
-2. Draw `n_posterior_samples` approximate posterior samples via ST-MCMC
+2. Draw `n_posterior_samples` (500) approximate posterior samples via ST-MCMC
    (`TransitionalMCMC.tmcmc`), using a Gaussian log-likelihood that combines
    the GP's predictive mean/variance with the (whitened, ≈ identity)
    observation covariance.
