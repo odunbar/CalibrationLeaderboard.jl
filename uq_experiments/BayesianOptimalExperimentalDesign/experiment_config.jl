@@ -23,7 +23,7 @@ method_key = "boed"
 ########################################################################
 # Important dials:
 #    max_iters:             number of GBOED iterations; N_ens is both the initial LHS size and the fixed per-iteration acquisition batch size.
-#    n_posterior_samples:   ST-MCMC population size drawn each iteration (paper uses ~8092; much lower here for compute budget). 500, up from 50: with 50 the
+#    n_posterior_samples:   ST-MCMC population size drawn each iteration (paper uses ~8092; much lower here for compute budget). 1000 (matches the other methods' n_pushforward_samples; was 500, and 50 before that): with 50 the
 #                           posterior was degenerate in the 26-D l96_vec case (GBOED lagged ~3 waves behind a 500-particle run); tmcmc cost is ~linear in this.
 #    n_eig_posterior_samples: size of the random posterior subsample X' that the EIG objective (paper Eq. 8) targets. EIG costs ~n^3 per output mode, so this
 #                           stays at 50 even though ST-MCMC now draws more; candidate batches are still initialised from all n_posterior_samples draws.
@@ -42,7 +42,7 @@ function experiment_config(case::Symbol)
     n_repeats = 20
     common = (
         n_repeats = n_repeats,
-        n_posterior_samples = 500,
+        n_posterior_samples = 1000, # matches the n_posterior samples for other approaches.
         n_eig_posterior_samples = 50,
         tmcmc_burnin = 5,
         tmcmc_thin = 1,
