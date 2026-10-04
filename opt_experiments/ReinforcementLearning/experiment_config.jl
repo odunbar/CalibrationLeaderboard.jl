@@ -40,7 +40,9 @@ function experiment_config(case::Symbol, update_frequency::Symbol, algorithm::Sy
     rmse_targets = [1.0, 1.1, 1.2]
 
     # RL hyperparameters shared across cases.  Actor parameters / actions are handled in
-    # prior-std units: action = prior_mean + prior_std .* θn.
+    # prior-whitened units: action = prior_mean + L * θn, L = chol(prior_cov).L (the diagonal
+    # prior_std for L63 / L96 const / flux).  actor_lr and explore_frac are in these units,
+    # i.e. in prior standard deviations along the whitened (Cholesky) directions.
     rl = (
         # --- Bellman / targets ---
         # gamma=1 makes the critic's F-dependence vanish at the Bellman fixed point for a

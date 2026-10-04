@@ -54,10 +54,15 @@ gradient is simply `E_x[∇_F Q_ϑ(x,F)]` evaluated at `F = F_θ`.
 3. **Actor targets.** `π_θ(x_{k+1})` in the target uses the *current* actor (no target
    actor). A Polyak-averaged **target critic** is used (`polyak = 0.05`; `polyak = 1`
    recovers the un-targeted recursion written in the description).
-4. **Actor coordinates.** The actor is stored as `θn` in prior-std units
-   (`F = prior_mean + prior_std .* θn`) and updated with Adam (`Optimisers.jl`);
-   `actor_lr` is therefore in units of prior standard deviations.
-5. **Critic scaling.** Inputs are standardized (state mean/std and prior-scaled
+4. **Actor coordinates and exploration.** The actor is stored as `θn` in prior-whitened
+   units (`F = prior_mean + L θn`, `L = chol(prior_cov).L`) and updated with Adam
+   (`Optimisers.jl`); `actor_lr` is therefore in units of prior standard deviations along the
+   whitened directions, so step sizes scale with the prior (unlike a fixed raw-unit step).
+   Exploration noise is `frac · L · randn`, i.e. it follows the prior's correlation
+   structure. For the diagonal priors (L63, L96 const, flux) `L = diag(prior_std)` and this
+   is identical to per-coordinate prior-std scaling; only L96 vec (correlated prior) changes.
+   The critic's action input is the whitened action `L⁻¹(F − prior_mean)`.
+5. **Critic scaling.** Inputs are standardized (state mean/std and prior-whitened
    action), and the target is divided by `φ_scale` (median warm-up `Φ`). These are
    frozen at the first update.
 6. **Algorithm: DDPG vs TD3** (`ALGORITHM` toggle / env var, `:ddpg` or `:td3`). Both use

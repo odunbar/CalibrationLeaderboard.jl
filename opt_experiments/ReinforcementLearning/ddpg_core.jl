@@ -6,7 +6,8 @@
 #
 # Mapping from the write-up (README.md, "Reinforcement learning formulation"):
 #   actor   π_θ(x) = F_θ        state-independent: the parameter vector IS the policy.
-#                               Stored as θn in PRIOR-STD units, F = prior_mean + prior_std .* θn.
+#                               Stored as θn in PRIOR-WHITENED units, F = prior_mean + L θn with
+#                               L = chol(prior_cov).L (L = diag(prior_std) for a diagonal prior).
 #   critic  Q_ϑ(x, F)           small MLP (or several, for the TD3 min-target trick).
 #   reward  r_k = Φ_{k-1} − Φ_k with Φ_k the whitened misfit of the statistics window.
 #
@@ -74,7 +75,7 @@ mutable struct DDPGAgent
     critic_states::Vector{Any}
     # fixed normalisation (set by init_normalization! at the end of warm-up)
     F_mean::Vector{Float64}
-    F_std::Vector{Float64}
+    F_L::LowerTriangular{Float64, Matrix{Float64}}   # Cholesky factor of the prior covariance
     x_mean::Vector{Float64}
     x_std::Vector{Float64}
     φ_scale::Float64
@@ -88,9 +89,10 @@ mutable struct DDPGAgent
     n_updates::Int
 end
 
-function DDPGAgent(cfg, θ0_raw::Vector{Float64}, prior_mean, prior_std, nx::Int, rng::AbstractRNG)
+function DDPGAgent(cfg, θ0_raw::Vector{Float64}, prior_mean, prior_cov, nx::Int, rng::AbstractRNG)
     nu  = length(θ0_raw)
-    θn  = (θ0_raw .- prior_mean) ./ prior_std
+    L   = LowerTriangular(Matrix{Float64}(cholesky(Symmetric(Matrix{Float64}(prior_cov))).L))
+    θn  = L \ (θ0_raw .- prior_mean)
     actor_state = Optimisers.setup(
         Optimisers.Adam(cfg.actor_lr, (cfg.adam_beta1, cfg.adam_beta2), cfg.adam_eps), θn)
     critics = Any[build_critic(nx + nu, cfg.hidden, rng) for _ in 1:cfg.n_critics]
@@ -98,7 +100,7 @@ function DDPGAgent(cfg, θ0_raw::Vector{Float64}, prior_mean, prior_std, nx::Int
     cstates = Any[Flux.setup(Flux.Adam(cfg.critic_lr), c) for c in critics]
     return DDPGAgent(
         θn, actor_state, critics, targets, cstates,
-        Vector{Float64}(prior_mean), Vector{Float64}(prior_std),
+        Vector{Float64}(prior_mean), L,
         zeros(nx), ones(nx), 1.0,
         cfg.gamma, cfg.polyak, cfg.policy_delay, cfg.target_noise, cfg.target_noise_clip,
         cfg.batch_size, 0,
@@ -106,7 +108,7 @@ function DDPGAgent(cfg, θ0_raw::Vector{Float64}, prior_mean, prior_std, nx::Int
 end
 
 # Current (noise-free) policy output in raw units.
-policy_action(a::DDPGAgent) = a.F_mean .+ a.F_std .* a.θn
+policy_action(a::DDPGAgent) = a.F_mean .+ a.F_L * a.θn
 
 # Set the (fixed) input/output scalings from the warm-up data.
 function init_normalization!(a::DDPGAgent, b::ReplayBuffer)
@@ -118,11 +120,12 @@ function init_normalization!(a::DDPGAgent, b::ReplayBuffer)
 end
 
 norm_x(a::DDPGAgent, X) = Float32.((X .- a.x_mean) ./ a.x_std)
-norm_F(a::DDPGAgent, F) = Float32.((F .- a.F_mean) ./ a.F_std)
+norm_F(a::DDPGAgent, F) = Float32.(a.F_L \ (F .- a.F_mean))   # whitened action = actor coordinates
 
-# Gaussian exploration noise on the applied action (frac in prior-std units).
+# Gaussian exploration noise on the applied action, shaped by the prior Cholesky factor:
+# noise = frac · L · randn (frac in prior-std units along the whitened directions).
 explore_action(a::DDPGAgent, rng::AbstractRNG, frac::Real) =
-    policy_action(a) .+ frac .* a.F_std .* randn(rng, length(a.θn))
+    policy_action(a) .+ frac .* (a.F_L * randn(rng, length(a.θn)))
 
 function polyak!(tgt, src, τ::Real)
     pt, re = Flux.destructure(tgt)

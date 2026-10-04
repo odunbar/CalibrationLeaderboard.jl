@@ -13,10 +13,9 @@ function run_one(cfg, rmse_target, rng_idx, prob)
     rng_net = MersenneTwister(90_000 + rng_idx)   # critic init / minibatches, independent of the env stream
 
     prior_dist = MvNormal(prior_mean, Matrix(Symmetric(prior_cov)))
-    prior_std  = sqrt.(diag(Matrix(prior_cov)))
     θ0         = rand(rng, prior_dist)
 
-    agent = DDPGAgent(cfg, θ0, prior_mean, prior_std, nx, rng_net)
+    agent = DDPGAgent(cfg, θ0, prior_mean, prior_cov, nx, rng_net)
     buf   = ReplayBuffer(nx, nu, cfg.buffer_size)
     env   = reset_env!(RLEnv(prob.x0), prob, rng)
 
