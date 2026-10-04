@@ -198,7 +198,7 @@ function train_network(model, x_train, y_train)
     x_train = Float32.(x_train)
     y_train = Float32.(y_train)
 
-    opt = Flux.setup(Adam(), model)
+    opt = Flux.setup(Flux.Adam(), model)
     data = Flux.DataLoader((x_train, y_train), batchsize = 32, shuffle = true)  # train the model
 
     # Train the model over multiple epochs
