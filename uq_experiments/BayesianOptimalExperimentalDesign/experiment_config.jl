@@ -35,6 +35,10 @@ method_key = "boed"
 #    eig_call_limit:        hard cap on raw EIG evaluations, enforced directly by `optimize_batch` (Optim's own f_calls_limit/g_calls_limit don't cumulate across Fminbox's outer rounds).
 #    eig_bounds_std:        Fminbox box half-width for the candidate batch, in prior-whitened-truncated standard-normal units.
 #    eig_jitter:            diagonal jitter (as a multiple of the GP's signal variance) added before eig_objective's solve/logdet calls.
+#    gp_optim_iters:        Fminbox inner L-BFGS iteration cap for each GP hyperparameter fit (fit_boed_gps). Optim's default is 1000, which dominated wallclock.
+#    gp_outer_iters:        Fminbox outer barrier-loop cap for the GP fit.
+#    gp_g_tol, gp_f_reltol: gradient / relative-improvement stopping tolerances for the GP fit.
+#    gp_warm_start:         (off by default: in benchmarks it cost 2-11 nats of marginal likelihood for a further ~1.5x speedup in 24-D only) start each iteration's GP fit from the previous iteration's hyperparameters (clamped inside the new bounds) instead of the std(Z)-based guess.
 #    batch_init_strategy:   :posterior_subsample (subsample the current ST-MCMC posterior) or :fresh_lhs (a fresh LHS draw).
 #    retain_var:            fraction of variance retained by the GP's OUTPUT whitening (against R).
 #    retain_var_input:      fraction of variance retained by the GP's INPUT whitening (against the prior); also the GBOED candidate space's dimension, so set per case (0.99 for l63/l96_const's small θ, 0.9 for l96_vec/l96_flux's slowly-decaying prior spectrum).
@@ -53,6 +57,11 @@ function experiment_config(case::Symbol)
         eig_call_limit = 2_000,
         eig_bounds_std = 4.0,
         eig_jitter = 1e-6,
+        gp_optim_iters = 50,
+        gp_outer_iters = 3,
+        gp_g_tol = 1e-3,
+        gp_f_reltol = 1e-6,
+        gp_warm_start = false,
         batch_init_strategy = :posterior_subsample,
         retain_var = 0.99,
         calibrate_date = calibrate_date,

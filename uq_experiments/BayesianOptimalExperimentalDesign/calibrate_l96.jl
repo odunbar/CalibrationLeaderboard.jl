@@ -140,7 +140,7 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
     Z = lhs_standard_normal_sample(k_R_prior, N_ens, rng)
     theta = from_prior_whitened(prob, Z)
     results = timed_stage(() -> forward_eval_batch(theta), "forward_eval_batch (iter 1, N_ens=$N_ens, rng_idx=$rng_idx, case=$(cfg.force_case))")
-    gps = timed_stage(() -> fit_boed_gps(prob, Z, results), "fit_boed_gps (iter 1, rng_idx=$rng_idx, case=$(cfg.force_case))")
+    gps = timed_stage(() -> fit_boed_gps(prob, Z, results; gp_fit_kwargs(cfg)...), "fit_boed_gps (iter 1, rng_idx=$rng_idx, case=$(cfg.force_case))")
     X_post = timed_stage(
         () -> run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin),
         "run_tmcmc (iter 1, rng_idx=$rng_idx, case=$(cfg.force_case))",
@@ -170,7 +170,7 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
 
         Z = hcat(Z, X_cand)
         results = vcat(results, results_cand)
-        gps = timed_stage(() -> fit_boed_gps(prob, Z, results), "fit_boed_gps (iter $k, rng_idx=$rng_idx, case=$(cfg.force_case))")
+        gps = timed_stage(() -> fit_boed_gps(prob, Z, results; prev = gps, gp_fit_kwargs(cfg)...), "fit_boed_gps (iter $k, rng_idx=$rng_idx, case=$(cfg.force_case))")
         X_post = timed_stage(
             () -> run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin),
             "run_tmcmc (iter $k, rng_idx=$rng_idx, case=$(cfg.force_case))",

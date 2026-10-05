@@ -94,10 +94,36 @@ struct BOEDGPs
     gps::Vector{GaussianProcesses.GPE}   # one per whitened + truncated output mode
 end
 
+# Optim settings for the GP hyperparameter fit. GaussianProcesses.optimize! drops its kwargs when bounds are given (it calls Fminbox with positional
+# `args...` only), so these must be passed as an Optim.Options positional argument. Without it Fminbox runs on Optim's defaults (up to 1000 outer x 1000 inner iterations).
+function gp_optim_options(; iters::Int, outer_iters::Int, g_tol::Real, f_reltol::Real)
+    return Optim.Options(
+        iterations = iters, outer_iterations = outer_iters,
+        g_abstol = g_tol, outer_g_abstol = g_tol, f_reltol = f_reltol, outer_f_reltol = f_reltol,
+    )
+end
+
+# Pulls the gp_* dials out of an experiment_config NamedTuple, falling back to fit_boed_gps's own defaults for any that are absent.
+gp_fit_kwargs(cfg) = (
+    gp_optim_iters = get(cfg, :gp_optim_iters, 50),
+    gp_outer_iters = get(cfg, :gp_outer_iters, 3),
+    gp_g_tol = get(cfg, :gp_g_tol, 1e-3),
+    gp_f_reltol = get(cfg, :gp_f_reltol, 1e-6),
+    gp_warm_start = get(cfg, :gp_warm_start, false),
+)
+
 # Z: k_R_prior x N (cumulative prior-whitened inputs); results: N x n_out (cumulative raw outputs).
 # Kernel/noise bounds are relative to each GP's own data-driven scale, avoiding degenerate near-zero-noise fits ST-MCMC's resampling can collapse onto.
+# `prev`: the previous iteration's BOEDGPs. If given (and gp_warm_start), each mode's optimizer starts from that mode's previous hyperparameters, clamped
+# strictly inside this iteration's (data-driven) bounds, rather than from the generic std(Z)-based initial guess.
 function fit_boed_gps(
     prob::BOEDProblem, Z::AbstractMatrix, results::AbstractMatrix;
+    prev::Union{Nothing, BOEDGPs} = nothing,
+    gp_warm_start::Bool = false,
+    gp_optim_iters::Int = 50,
+    gp_outer_iters::Int = 3,
+    gp_g_tol::Real = 1e-3,
+    gp_f_reltol::Real = 1e-6,
     gp_lengthscale_log10_range::Real = 2.0,
     gp_signal_std_log10_range::Real = 2.0,
     gp_min_noise_std_frac::Real = 1e-3,
@@ -111,8 +137,10 @@ function fit_boed_gps(
     ll_lo = ll0 .- gp_lengthscale_log10_range * log(10)
     ll_hi = ll0 .+ gp_lengthscale_log10_range * log(10)
     N = size(Z, 2)
-    @info "fit_boed_gps: fitting $k_R_out GP(s) on N=$N cumulative points across $(Threads.nthreads()) thread(s)"
-    Threads.@threads for j in 1:k_R_out
+    use_prev = prev !== nothing && gp_warm_start && length(prev.gps) == k_R_out
+    optim_opts = gp_optim_options(; iters = gp_optim_iters, outer_iters = gp_outer_iters, g_tol = gp_g_tol, f_reltol = gp_f_reltol)
+    @info "fit_boed_gps: fitting $k_R_out GP(s) on N=$N cumulative points across $(Threads.nthreads()) thread(s)" warm_start = use_prev
+    Threads.@threads :dynamic for j in 1:k_R_out
         t0 = time()
         yj = Yfit[:, j]
         sy = std(yj)
@@ -128,11 +156,21 @@ function fit_boed_gps(
         noise_hi = log(gp_max_noise_std_frac) + lsy
         noisebounds = (noise_lo, noise_hi)
 
-        kernel = GaussianProcesses.SEArd(ll0, lsy)
-        # Centered at the noise bounds' midpoint so the start is always strictly interior, as Fminbox requires.
-        gp = GaussianProcesses.GPE(Z, yj, GaussianProcesses.MeanZero(), kernel, (noise_lo + noise_hi) / 2)
+        # Fminbox needs a strictly interior start: the cold start is interior by construction; a warm start is clamped in with a 1%-of-range margin.
+        interior(x, lo, hi) = clamp.(x, lo .+ 0.01 .* (hi .- lo), hi .- 0.01 .* (hi .- lo))
+        if use_prev
+            gp_prev = prev.gps[j]
+            kp0 = interior(GaussianProcesses.get_params(gp_prev.kernel), kernbounds[1], kernbounds[2])
+            noise0 = only(interior([gp_prev.logNoise.value], noise_lo, noise_hi))
+        else
+            kp0 = vcat(ll0, lsy)
+            # Centered at the noise bounds' midpoint so the start is always strictly interior, as Fminbox requires.
+            noise0 = (noise_lo + noise_hi) / 2
+        end
+        kernel = GaussianProcesses.SEArd(kp0[1:(end - 1)], kp0[end])
+        gp = GaussianProcesses.GPE(Z, yj, GaussianProcesses.MeanZero(), kernel, noise0)
         try
-            GaussianProcesses.optimize!(gp; kernbounds = kernbounds, noisebounds = noisebounds)
+            GaussianProcesses.optimize!(gp, optim_opts; kernbounds = kernbounds, noisebounds = noisebounds)
         catch err
             @warn "GP hyperparameter optimization failed for whitened output $j; keeping initial hyperparameters." exception = err
         end

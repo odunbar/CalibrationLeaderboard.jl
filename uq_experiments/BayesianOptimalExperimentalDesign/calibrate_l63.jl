@@ -87,7 +87,7 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
     theta = from_prior_whitened(prob, Z)
     results = timed_stage(() -> forward_eval_batch(theta), "forward_eval_batch (iter 1, N_ens=$N_ens, rng_idx=$rng_idx)")
     # Fit the first GP
-    gps = timed_stage(() -> fit_boed_gps(prob, Z, results), "fit_boed_gps (iter 1, rng_idx=$rng_idx)")
+    gps = timed_stage(() -> fit_boed_gps(prob, Z, results; gp_fit_kwargs(cfg)...), "fit_boed_gps (iter 1, rng_idx=$rng_idx)")
     # Use ST-MCMC (sequential parallel sampler for the posterior
     X_post = timed_stage(
         () -> run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin),
@@ -121,7 +121,7 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
         Z = hcat(Z, X_cand)
         #  augment dataset, and refit GP
         results = vcat(results, results_cand)
-        gps = timed_stage(() -> fit_boed_gps(prob, Z, results), "fit_boed_gps (iter $k, rng_idx=$rng_idx)")
+        gps = timed_stage(() -> fit_boed_gps(prob, Z, results; prev = gps, gp_fit_kwargs(cfg)...), "fit_boed_gps (iter $k, rng_idx=$rng_idx)")
 
         # re-samples the ST-MCMC posterior, for the next iteration
         X_post = timed_stage(
