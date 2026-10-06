@@ -310,14 +310,23 @@ function init_candidate_batch(X_post::AbstractMatrix, B::Int, rng::AbstractRNG; 
     end
 end
 
-# Runs Fminbox(LBFGS()) with Zygote reverse-mode gradients, and enforces `call_limit` itself: Optim's own
-# f_calls_limit/g_calls_limit are enforced per-inner-solve under Fminbox, so they don't cumulate across outer rounds.
+# Runs Fminbox(LBFGS()) with Zygote reverse-mode gradients (or plain LBFGS when `lo`/`hi` are `nothing`), and enforces `call_limit` itself:
+# Optim's own f_calls_limit/g_calls_limit are enforced per-inner-solve under Fminbox, so they don't cumulate across outer rounds.
 struct EIGCallLimitReached <: Exception end
 
 function run_fminbox_with_call_limit(
-    neg_eig_raw::Function, x_init::AbstractVector, lo::AbstractVector, hi::AbstractVector;
+    neg_eig_raw::Function, x_init::AbstractVector, lo::Union{Nothing, AbstractVector}, hi::Union{Nothing, AbstractVector};
     iters::Int, outer_iters::Int, g_tol::Real, f_reltol::Real, call_limit::Int, label::AbstractString,
 )
+    bounded = lo !== nothing
+    if bounded
+        # Fminbox throws if the start lies outside [lo, hi] (and wants it interior). Posterior-subsample initial batches are unbounded ST-MCMC draws, so the
+        # occasional |z| > bound_std coordinate must be pulled inside, with a 0.1%-of-width margin off the walls.
+        margin = 1e-3 .* (hi .- lo)
+        n_clamped = count(x -> x, (x_init .< lo .+ margin) .| (x_init .> hi .- margin))
+        n_clamped > 0 && @info "$label: clamped $n_clamped of $(length(x_init)) initial coordinates into the EIG search box"
+        x_init = clamp.(x_init, lo .+ margin, hi .- margin)
+    end
     n_calls = Ref(0)
     best_val = Ref(Inf)
     best_x = Ref(copy(x_init))
@@ -349,7 +358,7 @@ function run_fminbox_with_call_limit(
     )
     converged, outer_rounds, hit_limit = false, 0, false
     try
-        res = Optim.optimize(od, lo, hi, x_init, Fminbox(LBFGS()), opts)
+        res = bounded ? Optim.optimize(od, lo, hi, x_init, Fminbox(LBFGS()), opts) : Optim.optimize(od, x_init, LBFGS(), opts)
         converged = Optim.converged(res)
         outer_rounds = Optim.iterations(res)
     catch e
@@ -359,28 +368,67 @@ function run_fminbox_with_call_limit(
     @info "$label: done" converged outer_rounds objective_evals = n_calls[] elapsed_s = round(time() - t0; digits = 2)
     if hit_limit
         @warn "$label: hit the EIG evaluation call_limit ($call_limit) before Optim's own convergence criteria were satisfied — the returned point(s) may be under-optimized. Consider raising cfg.eig_call_limit if this happens often." objective_evals = n_calls[] elapsed_s = round(time() - t0; digits = 2)
-    elseif !converged && outer_rounds >= outer_iters
+    elseif !converged && bounded && outer_rounds >= outer_iters
         @warn "$label: Fminbox's outer barrier loop hit its outer_iterations cap ($outer_iters) without converging — the returned point(s) may be under-optimized. Consider raising cfg.eig_outer_iters if this happens often." objective_evals = n_calls[] elapsed_s = round(time() - t0; digits = 2)
+    elseif !converged && !bounded && outer_rounds >= iters
+        @warn "$label: LBFGS hit its iteration cap ($iters) without converging — the returned point(s) may be under-optimized. Consider raising cfg.eig_optim_iters if this happens often." objective_evals = n_calls[] elapsed_s = round(time() - t0; digits = 2)
     end
     return best_x[], n_calls[]
 end
 
-# Jointly optimizes the WHOLE candidate batch (all B points at once, paper
-# Algorithm 2) to maximize eig_objective, in whitened space bounded by ±bound_std.
+########################################################################
+###############  χ² ball search region (radial reparameterization)  ####
+########################################################################
+# In prior-whitened coordinates a point is z ~ N(0, I_k), so ‖z‖² ~ χ²(k): the prior's mass lies in a thin shell, and the ball of radius R = √χ²_k(q) is its
+# natural region (a per-coordinate box reaches ‖z‖ = bound·√k at its corners, far outside the typical set when k is large). Fminbox only handles boxes, so each
+# candidate column is optimized as an unconstrained v and mapped into the ball by the smooth radial squash z = R·tanh(‖v‖/R)·v/‖v‖ (unit slope at the origin).
+ball_radius(k::Int, q::Real) = sqrt(quantile(Chisq(k), q))
+
+# V: k x B, columns v -> columns z with ‖z‖ < R. The 1e-12 keeps Zygote's gradient of the norm finite at v = 0.
+function ball_squash(V::AbstractMatrix, R::Real)
+    n = sqrt.(sum(abs2, V; dims = 1) .+ 1e-12)
+    return V .* (R .* tanh.(n ./ R) ./ n)
+end
+
+# Inverse of ball_squash on the open ball. Columns with ‖z‖ > frac·R (e.g. an unbounded ST-MCMC draw) are first shrunk radially to frac·R, since tanh
+# saturates (vanishing gradient) as ‖z‖ → R.
+function ball_unsquash(Z::AbstractMatrix, R::Real; frac::Real = 0.95)
+    n = sqrt.(sum(abs2, Z; dims = 1))
+    nc = min.(n, frac * R)
+    scale = ifelse.(n .< 1e-8, 1.0, (R .* atanh.(nc ./ R) ./ max.(nc, 1e-8)) .* (nc ./ max.(n, 1e-8)))
+    return Z .* scale
+end
+
+# Jointly optimizes the WHOLE candidate batch (all B points at once, paper Algorithm 2) to maximize eig_objective, in whitened space.
+# `region = :ball` (each point inside the χ²_k(ball_quantile) ball, via radial reparameterization) or `:box` (Fminbox on ±bound_std per coordinate).
 function optimize_batch(
     X_init::AbstractMatrix, X_post::AbstractMatrix, hyperparams_by_dim, k_R_prior::Int, B::Int;
-    bound_std::Real, iters::Int, outer_iters::Int = 20, jitter::Real,
+    bound_std::Real = 4.0, iters::Int, outer_iters::Int = 20, jitter::Real,
     g_tol::Real = 1e-3, f_reltol::Real = 1e-6, call_limit::Int = 5_000,
+    region::Symbol = :box, ball_quantile::Real = 0.999,
 )
-    lo = fill(-bound_std, k_R_prior * B)
-    hi = fill(bound_std, k_R_prior * B)
     neg_eig_raw(x) = -eig_objective(x, X_post, hyperparams_by_dim, k_R_prior, B; jitter = jitter)
-    x_star, _ = run_fminbox_with_call_limit(
-        neg_eig_raw, vec(X_init), lo, hi;
-        iters = iters, outer_iters = outer_iters, g_tol = g_tol, f_reltol = f_reltol,
-        call_limit = call_limit, label = "optimize_batch",
-    )
-    return reshape(x_star, k_R_prior, B)
+    if region === :box
+        lo = fill(-bound_std, k_R_prior * B)
+        hi = fill(bound_std, k_R_prior * B)
+        x_star, _ = run_fminbox_with_call_limit(
+            neg_eig_raw, vec(X_init), lo, hi;
+            iters = iters, outer_iters = outer_iters, g_tol = g_tol, f_reltol = f_reltol,
+            call_limit = call_limit, label = "optimize_batch",
+        )
+        return reshape(x_star, k_R_prior, B)
+    elseif region === :ball
+        R = ball_radius(k_R_prior, ball_quantile)
+        neg_eig_v(v) = neg_eig_raw(vec(ball_squash(reshape(v, k_R_prior, B), R)))
+        v_star, _ = run_fminbox_with_call_limit(
+            neg_eig_v, vec(ball_unsquash(Matrix(X_init), R)), nothing, nothing;
+            iters = iters, outer_iters = outer_iters, g_tol = g_tol, f_reltol = f_reltol,
+            call_limit = call_limit, label = "optimize_batch",
+        )
+        return ball_squash(reshape(v_star, k_R_prior, B), R)
+    else
+        error("Unknown eig region: $region (expected :box or :ball)")
+    end
 end
 
 # PROTOTYPE, not wired into calibrate_l63.jl/calibrate_l96.jl: greedily selects the batch one point at a time

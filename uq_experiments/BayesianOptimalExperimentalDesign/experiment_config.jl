@@ -28,12 +28,14 @@ method_key = "boed"
 #    n_eig_posterior_samples: size of the random posterior subsample X' that the EIG objective (paper Eq. 8) targets. EIG costs ~n^3 per output mode, so this
 #                           stays at 50 even though ST-MCMC now draws more; candidate batches are still initialised from all n_posterior_samples draws.
 #    tmcmc_burnin/tmcmc_thin: passed directly to TransitionalMCMC.tmcmc, set below its own 20/3 defaults since they multiply per-stage cost.
-#    eig_optim_iters:       Fminbox(LBFGS())'s inner-solve iteration cap (per fixed barrier weight).
+#    eig_optim_iters:       LBFGS iteration cap: Fminbox's inner-solve cap (per fixed barrier weight) for :box, the whole-solve cap for :ball.
 #    eig_outer_iters:       Fminbox's outer barrier-loop iteration cap.
 #    eig_g_tol:             g_abstol/outer_g_abstol; loosened from Optim's 1e-8 default, which this EIG objective rarely satisfies.
 #    eig_f_reltol:          f_reltol/outer_f_reltol; Optim's default is 0.0 (disabled), so this is the only relative-improvement stopping test.
 #    eig_call_limit:        hard cap on raw EIG evaluations, enforced directly by `optimize_batch` (Optim's own f_calls_limit/g_calls_limit don't cumulate across Fminbox's outer rounds).
-#    eig_bounds_std:        Fminbox box half-width for the candidate batch, in prior-whitened-truncated standard-normal units.
+#    eig_region:            :ball (each candidate inside the χ²_k(eig_ball_quantile) ball of the prior-whitened space; k = truncated input dim) or :box (Fminbox on ±eig_bounds_std per coordinate).
+#    eig_ball_quantile:     χ² quantile setting the :ball radius R = sqrt(quantile(Chisq(k), q)).
+#    eig_bounds_std:        (:box only) Fminbox box half-width for the candidate batch, in prior-whitened-truncated standard-normal units.
 #    eig_jitter:            diagonal jitter (as a multiple of the GP's signal variance) added before eig_objective's solve/logdet calls.
 #    gp_optim_iters:        Fminbox inner L-BFGS iteration cap for each GP hyperparameter fit (fit_boed_gps). Optim's default is 1000, which dominated wallclock.
 #    gp_outer_iters:        Fminbox outer barrier-loop cap for the GP fit.
@@ -50,11 +52,13 @@ function experiment_config(case::Symbol)
         n_eig_posterior_samples = 50,
         tmcmc_burnin = 5,
         tmcmc_thin = 1,
-        eig_optim_iters = 200,
+        eig_optim_iters = 500,
         eig_outer_iters = 20,
         eig_g_tol = 1e-3,
         eig_f_reltol = 1e-6,
         eig_call_limit = 2_000,
+        eig_region = :ball,
+        eig_ball_quantile = 0.999,
         eig_bounds_std = 4.0,
         eig_jitter = 1e-6,
         gp_optim_iters = 50,
