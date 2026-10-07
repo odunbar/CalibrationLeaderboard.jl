@@ -96,6 +96,12 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
 
     posteriors_by_k = Dict{Int, Matrix{Float64}}(1 => from_prior_whitened(prob, X_post))
     n_iters_completed = 1
+    results_fn = joinpath(output_dir, results_filename(cfg, N_ens, rng_idx))
+    save_wave() = save_wave_results(
+        results_fn, posteriors_by_k, n_iters_completed, cfg.max_iters;
+        y = y, R = R, x0 = x0, ic_cov_sqrt = ic_cov_sqrt, lorenz_cfg = lorenz_cfg, obs_cfg = obs_cfg,
+    )
+    save_wave()
     @info "GBOED iteration 1/$(cfg.max_iters) done (N_ens=$N_ens, rng_idx=$rng_idx)"
 
     # Calibration loop: each adds one EIG-optimized acquisition batch,
@@ -130,17 +136,10 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
         )
         posteriors_by_k[k] = from_prior_whitened(prob, X_post)
         n_iters_completed = k
+        save_wave()
         @info "GBOED iteration $k/$(cfg.max_iters) done (N_ens=$N_ens, rng_idx=$rng_idx)"
     end
 
-    JLD2.save(
-        joinpath(output_dir, results_filename(cfg, N_ens, rng_idx)),
-        "posteriors_by_k", posteriors_by_k,
-        "k_values", collect(1:n_iters_completed),
-        "n_iters_completed", n_iters_completed,
-        "y", y, "R", R, "x0", x0, "ic_cov_sqrt", ic_cov_sqrt,
-        "lorenz_cfg", lorenz_cfg, "obs_cfg", obs_cfg,
-    )
     @info "Calibrate (GBOED) done: N_ens=$N_ens, rng_idx=$rng_idx, iters_completed=$n_iters_completed"
 end
 

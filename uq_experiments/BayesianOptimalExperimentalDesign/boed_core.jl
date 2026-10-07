@@ -6,6 +6,7 @@ using LinearAlgebra
 using Statistics
 using Random
 using Distributions
+using JLD2
 using PDMats
 using Optim
 using Zygote
@@ -31,6 +32,27 @@ function timed_stage(f::Function, label::AbstractString)
     result = f()
     @info "GBOED: finished $label" elapsed_s = round(time() - t0; digits = 2)
     return result
+end
+
+########################################################################
+###############  Per-wave results saving  ##############################
+########################################################################
+# Rewrites the cell's results JLD2 after every GBOED wave so a run cut short (SLURM time/mem limit) still leaves its completed waves for the pushforward + leaderboard stages
+# (both already handle cells with fewer than max_iters waves: missing waves are NaN, budget_to_target skips them). Not a checkpoint: nothing here lets the loop resume.
+# Written to a temp file then renamed, so a kill mid-write can't corrupt the last good file; the rename also drops stale pushforward_* keys from an earlier run of this cell.
+function save_wave_results(fn::AbstractString, posteriors_by_k, n_iters_completed::Int, max_iters::Int; kwargs...)
+    tmp = fn * ".tmp.jld2"   # FileIO picks the format from the extension
+    data = Dict{String, Any}(
+        "posteriors_by_k" => posteriors_by_k,
+        "k_values" => collect(1:n_iters_completed),
+        "n_iters_completed" => n_iters_completed,
+        "max_iters" => max_iters,
+    )
+    for (k, v) in kwargs
+        data[string(k)] = v
+    end
+    JLD2.save(tmp, data)
+    mv(tmp, fn; force = true)
 end
 
 ########################################################################
