@@ -24,9 +24,9 @@
 #SBATCH --output=../output/slurm/calib_%A_%a.out
 #SBATCH --error=../output/slurm/calib_%A_%a.err
 #SBATCH --array=1-180%100
-#SBATCH --time=8:00:00
+#SBATCH --time=18:00:00
 #SBATCH --mem=12G
-#SBATCH --cpus-per-task=28
+#SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
 #SBATCH --constraint=cascadelake
 
