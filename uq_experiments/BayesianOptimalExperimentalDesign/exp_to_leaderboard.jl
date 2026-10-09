@@ -145,7 +145,7 @@ function main()
     output_coverage_description = "R-whitened PCA marginal coverage: fraction of whitened output dims d where ỹ[d] ≤ q_p of whitened ST-MCMC-posterior-pushforward samples at GBOED iteration k_iter. Whitening: x̃_d = (Vᵀx)_d / √λ_d where R = VΛVᵀ. Retained $(k_R)/$(n_output) R-eigenmodes ($(round(100 * basis.cum_var[k_R]; digits = 1))% variance, threshold $(retain_var))."
     output_budget_description   = "Budget (N_ens·k_iter, k_iter = GBOED iteration; k_iter=1 is the initial LHS design before any acquisition) to first reach |S(q)−q| ≤ c·√(q(1−q)/N_y) per quantile q using R-whitened PCA coverage (N_y = $(k_R) effective whitened dims). NaN = not reached."
     output_iters_description    = "GBOED iteration k_iter to first reach R-whitened PCA coverage target per quantile. NaN = not reached."
-    ens_description              = "Ensemble size N_ens used per GBOED iteration (also the initial LHS design size and the EIG-optimized acquisition batch size)"
+    ens_description              = "Ensemble size N_ens used per GBOED iteration (also the initial LHS design size and the acquisition batch size; acquisition variant: $(cfg.variant) — eig = ST-MCMC posterior + EIG-optimized batch, tmcmc = ST-MCMC posterior, batch drawn from it, iekf = GP-surrogate IEKF posterior, batch drawn from it)"
     k_description                = "GBOED iteration index (1-indexed; iteration 1 is the initial LHS design, no acquisition yet)"
     cov_q_description            = "Quantile levels used for marginal coverage fraction metrics"
     ts_description                = "Scaling c in α_c(q) = c·√(q(1−q)/N_y); tolerance for budget_to_target / iters_to_target"

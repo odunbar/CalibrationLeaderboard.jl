@@ -11,6 +11,8 @@ using PDMats
 using Optim
 using Zygote
 using TransitionalMCMC
+import EnsembleKalmanProcesses as EKP
+using EnsembleKalmanProcesses.ParameterDistributions: ParameterDistribution, Parameterized, no_constraint
 
 include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "coverage_metrics.jl"))
 include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "prior_transforms.jl"))
@@ -543,4 +545,70 @@ function optimize_batch_hybrid(
         @info "optimize_batch_hybrid: joint phase for remaining $n_remaining point(s) done" cumulative_evals = total_calls elapsed_s = round(time() - t0; digits = 2)
     end
     return X_sel
+end
+
+########################################################################
+###############  Variants: posterior sampler + acquisition  ############
+########################################################################
+# Two independent dials (see experiment_config.jl's BOED_VARIANT):
+#   posterior sampler: ST-MCMC (:eig, :tmcmc) or IEKF on the GP surrogate (:iekf)
+#   acquisition:       joint-batch EIG optimization (:eig) or just N_ens draws from that posterior (:tmcmc, :iekf)
+
+# IEKF = GaussNewtonInversion, run on the GP-mean forward map (no true forward evaluations) in the truncated prior-whitened input space (prior N(0, I_k)) against the truncated
+# output-whitened observation (noise I, matching boed_loglik's Γ_obs≈I; unlike ST-MCMC it ignores the GP predictive variance). Starts from n_samples LHS prior draws, and runs
+# `iters` fixed steps of size `step` (iters*step = 1 -> approx posterior for the finite-time IEKF). Returns the final ensemble, k_R_prior x n_samples, playing the role of run_tmcmc's output.
+function run_iekf(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::AbstractRNG; step::Real = 0.1, iters::Int = 10)
+    k_in, k_out = prob.prior_basis.k_R, prob.output_basis.k_R
+    prior = ParameterDistribution(Parameterized(MvNormal(zeros(k_in), Matrix(1.0I, k_in, k_in))), fill(no_constraint(), k_in), "z_whitened")
+    ekp = EKP.EnsembleKalmanProcess(
+        lhs_standard_normal_sample(k_in, n_samples, rng), prob.y_whitened, Matrix(1.0I, k_out, k_out), EKP.GaussNewtonInversion(prior);
+        rng = copy(rng), scheduler = EKP.DefaultScheduler(step), verbose = false,
+    )
+    t0 = time()
+    for _ in 1:iters
+        U = Matrix{Float64}(EKP.get_u_final(ekp))
+        G = zeros(k_out, n_samples)
+        Threads.@threads :dynamic for j in 1:k_out
+            G[j, :] = GaussianProcesses.predict_f(gps.gps[j], U)[1]
+        end
+        EKP.update_ensemble!(ekp, G)
+    end
+    @info "run_iekf: done" iters elapsed_s = round(time() - t0; digits = 2)
+    return Matrix{Float64}(EKP.get_u_final(ekp))
+end
+
+# The variant's posterior sampler, k_R_prior x n_samples (prior-whitened coords).
+function sample_posterior(variant::Symbol, prob::BOEDProblem, gps::BOEDGPs, rng::AbstractRNG, cfg)
+    if variant === :iekf
+        return run_iekf(prob, gps, cfg.n_posterior_samples, rng; step = cfg.iekf_step, iters = cfg.iekf_iters)
+    elseif variant in (:eig, :tmcmc)
+        return run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin)
+    else
+        error("Unknown GBOED variant: $variant (expected :eig, :tmcmc or :iekf)")
+    end
+end
+
+# Proposes the next batch (k_R_prior x N_ens, prior-whitened coords) per `variant`.
+function acquire_batch(
+    variant::Symbol, prob::BOEDProblem, gps::BOEDGPs, X_post::AbstractMatrix, N_ens::Int, cfg, rng::AbstractRNG, label::AbstractString,
+)
+    k_R_prior = prob.prior_basis.k_R
+    if variant === :eig
+        hyperparams = extract_hyperparams(gps)
+        X_eig = subsample_columns(X_post, cfg.n_eig_posterior_samples, rng)   # EIG cost ~n^3 per mode; candidates still initialised from all of X_post
+        X_cand0 = init_candidate_batch(X_post, N_ens, rng; strategy = cfg.batch_init_strategy)
+        return timed_stage(
+            () -> optimize_batch(
+                X_cand0, X_eig, hyperparams, k_R_prior, N_ens;
+                bound_std = cfg.eig_bounds_std, region = cfg.eig_region, ball_quantile = cfg.eig_ball_quantile, iters = cfg.eig_optim_iters, outer_iters = cfg.eig_outer_iters,
+                jitter = cfg.eig_jitter, g_tol = cfg.eig_g_tol, f_reltol = cfg.eig_f_reltol, call_limit = cfg.eig_call_limit,
+            ),
+            "optimize_batch ($label)",
+        )
+    elseif variant in (:tmcmc, :iekf)
+        # No EIG: N_ens draws straight from the current posterior (deliberately not cfg.batch_init_strategy, which can be :fresh_lhs).
+        return init_candidate_batch(X_post, N_ens, rng; strategy = :posterior_subsample)
+    else
+        error("Unknown GBOED variant: $variant (expected :eig, :tmcmc or :iekf)")
+    end
 end

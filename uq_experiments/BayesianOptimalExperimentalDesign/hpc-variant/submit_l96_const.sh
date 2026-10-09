@@ -2,6 +2,8 @@
 # Submit preliminaries + calibrate + pushforward + leaderboard for the L96 const-force case.
 #
 # Usage: bash submit_l96_const.sh [EXP_ID]
+#   BOED_VARIANT (optional env var): eig (default) | tmcmc | iekf — acquisition variant; sbatch forwards it to every stage,
+#                      e.g. "BOED_VARIANT=iekf bash submit_l96_const.sh"; outputs go to output/boed-<variant>_<date>/.
 #   EXP_ID (optional): label appended to SLURM job names so the queue stays
 #                      readable when all four cases run simultaneously,
 #                      e.g. "run2" -> jobs appear as "calib_l96c_run2".
@@ -9,7 +11,7 @@
 set -euo pipefail
 
 EXP_ID=${1:-}
-LABEL="l96c${EXP_ID:+_${EXP_ID}}"
+LABEL="l96c${EXP_ID:+_${EXP_ID}}${BOED_VARIANT:+_${BOED_VARIANT}}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 cd "$DIR"

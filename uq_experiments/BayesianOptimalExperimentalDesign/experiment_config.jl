@@ -11,12 +11,24 @@ EXPERIMENT = experiments[1]
 # Date identifying this calibration run — PIN before submitting an array job.
 calibrate_date = haskey(ENV, "CALIBRATE_DATE") ? Date(ENV["CALIBRATE_DATE"]) : today()
 
+# GBOED variant — what samples the posterior from the GP, and what proposes each iteration's N_ens-point batch after the initial LHS design:
+#   :eig   -> the full GBOED: ST-MCMC posterior + joint-batch maximization of the closed-form EIG against it (leaderboard key "boed").
+#   :tmcmc -> no EIG: ST-MCMC posterior, and the batch is just N_ens draws from it (key "boed-tmcmc").
+#   :iekf  -> no EIG, and no ST-MCMC: the posterior is the final ensemble of an IEKF (GaussNewtonInversion, fixed-step DefaultScheduler) run on the GP-mean surrogate (no
+#             forward evaluations), and the batch is N_ens draws from it (key "boed-iekf").
+# The GP fit, pushforward and leaderboard stages are identical across variants; only calibrate's posterior-sampling and acquisition steps differ. Override via the BOED_VARIANT env var
+# (set it for EVERY stage, so pushforward/exp_to_leaderboard read the matching output directory).
+boed_variants = [:eig, :tmcmc, :iekf]
+BOED_VARIANT = boed_variants[1]
+boed_variant = haskey(ENV, "BOED_VARIANT") ? Symbol(ENV["BOED_VARIANT"]) : BOED_VARIANT
+boed_variant in boed_variants || throw(ArgumentError("Unknown BOED_VARIANT: $boed_variant. Expected one of $boed_variants"))
+
 ########################################################################
 ###############  SHARED CONSTANTS  ####################################
 ########################################################################
 # This experiment runs a single method (GBOED) — there is no method axis,
-# unlike uq_experiments/calibrate_emulate_sample.
-method_key = "boed"
+# unlike uq_experiments/calibrate_emulate_sample — but three acquisition variants (see above), each with its own output directory/netcdf.
+method_key = Dict(:eig => "boed", :tmcmc => "boed-tmcmc", :iekf => "boed-iekf")[boed_variant]
 
 ########################################################################
 ###############  PER-CASE CONFIG  #####################################
@@ -42,6 +54,7 @@ method_key = "boed"
 #    gp_g_tol, gp_f_reltol: gradient / relative-improvement stopping tolerances for the GP fit.
 #    gp_warm_start:         (off by default: in benchmarks it cost 2-11 nats of marginal likelihood for a further ~1.5x speedup in 24-D only) start each iteration's GP fit from the previous iteration's hyperparameters (clamped inside the new bounds) instead of the std(Z)-based guess.
 #    batch_init_strategy:   :posterior_subsample (subsample the current ST-MCMC posterior) or :fresh_lhs (a fresh LHS draw).
+#    iekf_step, iekf_iters: (:iekf variant only) fixed-step DefaultScheduler size and number of steps for the GP-surrogate IEKF posterior sampler (iekf_step*iekf_iters = 1).
 #    retain_var:            fraction of variance retained by the GP's OUTPUT whitening (against R).
 #    retain_var_input:      fraction of variance retained by the GP's INPUT whitening (against the prior); also the GBOED candidate space's dimension, so set per case (0.99 for l63/l96_const's small θ, 0.9 for l96_vec/l96_flux's slowly-decaying prior spectrum).
 function experiment_config(case::Symbol)
@@ -68,6 +81,9 @@ function experiment_config(case::Symbol)
         gp_warm_start = false,
         batch_init_strategy = :posterior_subsample,
         retain_var = 0.99,
+        iekf_step = 0.1,   # :iekf variant only: fixed DefaultScheduler step (matches GaussNewtonKalmanInversion / CES's IEKF)
+        iekf_iters = 10,   # :iekf variant only: iekf_iters * iekf_step = 1, the finite-time approximate posterior
+        variant = boed_variant,
         calibrate_date = calibrate_date,
     )
 

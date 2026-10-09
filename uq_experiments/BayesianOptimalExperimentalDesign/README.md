@@ -87,6 +87,37 @@ stays identical to every other UQ method's leaderboard convention with zero
 changes to `common/uq_metrics/coverage_metrics.jl`'s `budget_to_target` — not
 a literal transcription of the paper's own single-final-budget framing.
 
+## Variants / ablations (`BOED_VARIANT`)
+
+Three variants form an ablation ladder. All share preliminaries, the GP fit,
+pushforward and leaderboard; they differ in the posterior sampler and the
+acquisition step inside `calibrate_<MODEL>.jl`. Select with the `BOED_VARIANT`
+env var (or `BOED_VARIANT` in `experiment_config.jl`); set it for **every**
+stage, since it picks the output directory/netcdf (`method_key`).
+
+| `BOED_VARIANT` | Leaderboard key | Posterior sampler | Acquisition (batch of `N_ens`) |
+|---|---|---|---|
+| `eig` (default) | `boed` | ST-MCMC | Joint-batch EIG maximization (above) |
+| `tmcmc` | `boed-tmcmc` | ST-MCMC | **No EIG:** `N_ens` draws from the ST-MCMC posterior |
+| `iekf` | `boed-iekf` | **IEKF on the GP surrogate** (no ST-MCMC) | **No EIG:** `N_ens` draws from the IEKF posterior |
+
+`tmcmc` isolates how much the EIG optimization buys over simply sampling the
+posterior. `iekf` additionally replaces ST-MCMC with a cheap sampler:
+`GaussNewtonInversion` (fixed-step `DefaultScheduler(0.1)`, 10 steps, so T = 1)
+run on the GP-*mean* forward map for an ensemble of `n_posterior_samples`
+LHS-prior draws, in the truncated prior-whitened input space (prior `N(0, I)`)
+against the truncated output-whitened observation (noise `I`). No forward-model
+evaluations are used by the sampler. Unlike ST-MCMC's likelihood it ignores the
+GP predictive variance. The final IEKF ensemble is the stored per-iteration
+"posterior" and the pool the next batch is drawn from. Dials: `iekf_step`,
+`iekf_iters` in `experiment_config.jl`.
+
+```bash
+BOED_VARIANT=tmcmc julia --project=. calibrate_l63.jl 1
+BOED_VARIANT=iekf  julia --project=. calibrate_l63.jl 1
+BOED_VARIANT=iekf  bash hpc-variant/submit_l63.sh      # HPC: env var is forwarded to all stages
+```
+
 ## SE-ARD kernel
 
 The paper fixes the GP kernel's smoothness at ν=3.5 (Matérn-7/2); this

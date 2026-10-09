@@ -90,8 +90,8 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
     gps = timed_stage(() -> fit_boed_gps(prob, Z, results; gp_fit_kwargs(cfg)...), "fit_boed_gps (iter 1, rng_idx=$rng_idx)")
     # Use ST-MCMC (sequential parallel sampler for the posterior
     X_post = timed_stage(
-        () -> run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin),
-        "run_tmcmc (iter 1, rng_idx=$rng_idx)",
+        () -> sample_posterior(cfg.variant, prob, gps, rng, cfg),
+        "sample_posterior (iter 1, rng_idx=$rng_idx)",
     )
 
     posteriors_by_k = Dict{Int, Matrix{Float64}}(1 => from_prior_whitened(prob, X_post))
@@ -104,23 +104,9 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
     save_wave()
     @info "GBOED iteration 1/$(cfg.max_iters) done (N_ens=$N_ens, rng_idx=$rng_idx)"
 
-    # Calibration loop: each adds one EIG-optimized acquisition batch,
+    # Calibration loop: each adds one acquisition batch (EIG-optimized, posterior-drawn, per cfg.variant),
     for k in 2:cfg.max_iters
-        hyperparams = extract_hyperparams(gps)
-        # sample candidates from X_post
-        X_eig = subsample_columns(X_post, cfg.n_eig_posterior_samples, rng)   # EIG cost ~n^3 per mode; candidates still initialised from all of X_post
-        X_cand0 = init_candidate_batch(X_post, N_ens, rng; strategy = cfg.batch_init_strategy)
-
-        # Optimizes EIG at the posterior samples
-        X_cand = timed_stage(
-            () -> optimize_batch(
-                X_cand0, X_eig, hyperparams, k_R_prior, N_ens;
-                bound_std = cfg.eig_bounds_std, region = cfg.eig_region, ball_quantile = cfg.eig_ball_quantile, iters = cfg.eig_optim_iters, outer_iters = cfg.eig_outer_iters,
-                jitter = cfg.eig_jitter, g_tol = cfg.eig_g_tol, f_reltol = cfg.eig_f_reltol, call_limit = cfg.eig_call_limit,
-            ),
-            "optimize_batch (iter $k, rng_idx=$rng_idx)",
-        )
-        # decode and foward evaluate again
+        X_cand = acquire_batch(cfg.variant, prob, gps, X_post, N_ens, cfg, rng, "iter $k, rng_idx=$rng_idx")
         theta_cand = from_prior_whitened(prob, X_cand)
         results_cand = timed_stage(() -> forward_eval_batch(theta_cand), "forward_eval_batch (iter $k, N_ens=$N_ens, rng_idx=$rng_idx)")
 
@@ -131,8 +117,8 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
 
         # re-samples the ST-MCMC posterior, for the next iteration
         X_post = timed_stage(
-            () -> run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin),
-            "run_tmcmc (iter $k, rng_idx=$rng_idx)",
+            () -> sample_posterior(cfg.variant, prob, gps, rng, cfg),
+            "sample_posterior (iter $k, rng_idx=$rng_idx)",
         )
         posteriors_by_k[k] = from_prior_whitened(prob, X_post)
         n_iters_completed = k
