@@ -551,8 +551,8 @@ end
 ###############  Variants: posterior sampler + acquisition  ############
 ########################################################################
 # Two independent dials (see experiment_config.jl's BOED_VARIANT):
-#   posterior sampler: ST-MCMC (:eig, :tmcmc) or IEKF on the GP surrogate (:iekf)
-#   acquisition:       joint-batch EIG optimization (:eig) or just N_ens draws from that posterior (:tmcmc, :iekf)
+#   posterior sampler: ST-MCMC (:tmcmc_eig, :tmcmc) or IEKF on the GP surrogate (:iekf_eig, :iekf)
+#   acquisition:       joint-batch EIG optimization (:tmcmc_eig, :iekf_eig) or just N_ens draws from that posterior (:tmcmc, :iekf)
 
 # IEKF = GaussNewtonInversion, run on the GP-mean forward map (no true forward evaluations) in the truncated prior-whitened input space (prior N(0, I_k)) against the truncated
 # output-whitened observation (noise I, matching boed_loglik's Γ_obs≈I; unlike ST-MCMC it ignores the GP predictive variance). Starts from n_samples LHS prior draws, and runs
@@ -579,12 +579,12 @@ end
 
 # The variant's posterior sampler, k_R_prior x n_samples (prior-whitened coords).
 function sample_posterior(variant::Symbol, prob::BOEDProblem, gps::BOEDGPs, rng::AbstractRNG, cfg)
-    if variant === :iekf
+    if variant in (:iekf, :iekf_eig)
         return run_iekf(prob, gps, cfg.n_posterior_samples, rng; step = cfg.iekf_step, iters = cfg.iekf_iters)
-    elseif variant in (:eig, :tmcmc)
+    elseif variant in (:tmcmc, :tmcmc_eig)
         return run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin)
     else
-        error("Unknown GBOED variant: $variant (expected :eig, :tmcmc or :iekf)")
+        error("Unknown GBOED variant: $variant (expected :tmcmc_eig, :tmcmc, :iekf_eig or :iekf)")
     end
 end
 
@@ -593,7 +593,7 @@ function acquire_batch(
     variant::Symbol, prob::BOEDProblem, gps::BOEDGPs, X_post::AbstractMatrix, N_ens::Int, cfg, rng::AbstractRNG, label::AbstractString,
 )
     k_R_prior = prob.prior_basis.k_R
-    if variant === :eig
+    if variant in (:tmcmc_eig, :iekf_eig)
         hyperparams = extract_hyperparams(gps)
         X_eig = subsample_columns(X_post, cfg.n_eig_posterior_samples, rng)   # EIG cost ~n^3 per mode; candidates still initialised from all of X_post
         X_cand0 = init_candidate_batch(X_post, N_ens, rng; strategy = cfg.batch_init_strategy)
@@ -609,6 +609,6 @@ function acquire_batch(
         # No EIG: N_ens draws straight from the current posterior (deliberately not cfg.batch_init_strategy, which can be :fresh_lhs).
         return init_candidate_batch(X_post, N_ens, rng; strategy = :posterior_subsample)
     else
-        error("Unknown GBOED variant: $variant (expected :eig, :tmcmc or :iekf)")
+        error("Unknown GBOED variant: $variant (expected :tmcmc_eig, :tmcmc, :iekf_eig or :iekf)")
     end
 end

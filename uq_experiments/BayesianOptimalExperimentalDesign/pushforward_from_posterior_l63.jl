@@ -77,6 +77,7 @@ end
 
 function main()
     cfg = experiment_config(:l63)
+    report_variant(cfg, "pushforward")
     tasks = flat_tasks(cfg)
     tidx = task_index_from_args()
     output_dir = joinpath(@__DIR__, "output", calib_directory(cfg))

@@ -90,6 +90,7 @@ function main()
     experiment = l96_experiment()
     @assert experiment in (:l96_const, :l96_vec, :l96_flux) "pushforward_from_posterior_l96.jl requires EXPERIMENT to be :l96_const, :l96_vec, or :l96_flux (got $experiment)"
     cfg = experiment_config(experiment)
+    report_variant(cfg, "pushforward")
     tasks = flat_tasks(cfg)
     tidx = task_index_from_args()
     output_dir = joinpath(@__DIR__, "output", calib_directory(cfg))

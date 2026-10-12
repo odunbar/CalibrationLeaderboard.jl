@@ -99,7 +99,7 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
     results_fn = joinpath(output_dir, results_filename(cfg, N_ens, rng_idx))
     save_wave() = save_wave_results(
         results_fn, posteriors_by_k, n_iters_completed, cfg.max_iters;
-        y = y, R = R, x0 = x0, ic_cov_sqrt = ic_cov_sqrt, lorenz_cfg = lorenz_cfg, obs_cfg = obs_cfg,
+        variant = String(cfg.variant), y = y, R = R, x0 = x0, ic_cov_sqrt = ic_cov_sqrt, lorenz_cfg = lorenz_cfg, obs_cfg = obs_cfg,
     )
     save_wave()
     @info "GBOED iteration 1/$(cfg.max_iters) done (N_ens=$N_ens, rng_idx=$rng_idx)"
@@ -131,6 +131,7 @@ end
 
 function main()
     cfg = experiment_config(:l63)
+    report_variant(cfg, "calibrate")
     tasks = flat_tasks(cfg)
     tidx = task_index_from_args()
     output_dir = joinpath(@__DIR__, "output", calib_directory(cfg))

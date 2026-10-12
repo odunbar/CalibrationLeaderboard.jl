@@ -151,7 +151,7 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
     results_fn = joinpath(output_dir, results_filename(cfg, N_ens, rng_idx))
     save_wave() = save_wave_results(
         results_fn, posteriors_by_k, n_iters_completed, cfg.max_iters;
-        y = y, R = R, x0 = x0, ic_cov_sqrt = ic_cov_sqrt, lorenz_cfg = lorenz_cfg, obs_cfg = obs_cfg, truth_phi = setup.phi, phi_structure = setup.phi_structure, sample_range = setup.sample_range,
+        variant = String(cfg.variant), y = y, R = R, x0 = x0, ic_cov_sqrt = ic_cov_sqrt, lorenz_cfg = lorenz_cfg, obs_cfg = obs_cfg, truth_phi = setup.phi, phi_structure = setup.phi_structure, sample_range = setup.sample_range,
     )
     save_wave()
     @info "GBOED iteration 1/$(cfg.max_iters) done (N_ens=$N_ens, rng_idx=$rng_idx, case=$(cfg.force_case))"
@@ -185,6 +185,7 @@ function main()
     experiment = l96_experiment()
     @assert experiment in (:l96_const, :l96_vec, :l96_flux) "calibrate_l96.jl requires EXPERIMENT to be :l96_const, :l96_vec, or :l96_flux (got $experiment)"
     cfg = experiment_config(experiment)
+    report_variant(cfg, "calibrate")
     tasks = flat_tasks(cfg)
     tidx = task_index_from_args()
     output_dir = joinpath(@__DIR__, "output", calib_directory(cfg))
