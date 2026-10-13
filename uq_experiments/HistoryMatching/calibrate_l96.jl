@@ -134,6 +134,7 @@ function history_matching_one(cfg, N_ens, rng_idx, output_dir)
 
     waves = WaveGPs[]
     posteriors_by_k = Dict{Int, Matrix{Float64}}()
+    emulator_diagnostics = NamedTuple[]   # per-wave LOO emulator quality (see loo_diagnostics)
     n_waves_completed = 0
     theta_ens = lhs_prior_sample(setup.prior_mean, setup.prior_cov_sqrt, N_ens, rng; constraint_transform = setup.constraint_transform)
     theta_accum = zeros(nu, 0)
@@ -156,6 +157,7 @@ function history_matching_one(cfg, N_ens, rng_idx, output_dir)
         end
         wave_gps = fit_wave_gps(prob, train_theta, train_results; ensemble_retain_var = ensemble_retain_var)
         push!(waves, wave_gps)
+        push!(emulator_diagnostics, loo_diagnostics(wave_gps))
         n_waves_completed = wave
 
         # One NROY draw serves both roles: it IS this wave's posterior, and
@@ -180,6 +182,7 @@ function history_matching_one(cfg, N_ens, rng_idx, output_dir)
     JLD2.save(
         joinpath(output_dir, results_filename(cfg, N_ens, rng_idx)),
         "waves", waves,
+        "emulator_diagnostics", emulator_diagnostics,
         "posteriors_by_k", posteriors_by_k,
         "k_values", collect(1:n_waves_completed),
         "n_waves_completed", n_waves_completed,

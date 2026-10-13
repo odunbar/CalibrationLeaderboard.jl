@@ -67,6 +67,10 @@ function experiment_config(case::Symbol)
         kgmm_ridge   = 0.1,   # per-cluster covariance shrinkage toward the global
                               # covariance; K itself is chosen adaptively from the
                               # actual window size at fit time (see score_gfdt.jl)
+        collapse_tol = parse(Float64, get(ENV, "COLLAPSE_TOL", "1e-2")),
+                              # AD-fallback flag: a window is "collapsed" when min over components of
+                              # the temporal variance < collapse_tol (see is_collapsed_window in
+                              # score_gfdt.jl). 0 disables the fallback (GFDT every iteration).
     )
 
     if case == :l63
@@ -116,7 +120,10 @@ end
 # Fixed total budget per cell: outer_iter * N_ens <= budget_total, so cells with
 # a larger N_ens run fewer, cheaper-Jacobian-per-iteration LM iterations rather
 # than a fixed iteration count regardless of N_ens.
-n_iter_for(cfg, N_ens::Int) = Int(ceil(cfg.budget_total / N_ens))
+# LM_N_ITER (env) fixes the outer-iteration count for every N_ens instead (diagnostics runs; the
+# forward-model budget is then LM_N_ITER * N_ens).
+n_iter_for(cfg, N_ens::Int) =
+    haskey(ENV, "LM_N_ITER") ? parse(Int, ENV["LM_N_ITER"]) : Int(ceil(cfg.budget_total / N_ens))
 
 ########################################################################
 ###############  FILENAME BUILDERS  ###################################

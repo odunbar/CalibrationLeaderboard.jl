@@ -16,7 +16,7 @@ run_date = haskey(ENV, "RUN_DATE") ? Date(ENV["RUN_DATE"]) : today()
 function experiment_config(case::Symbol)
     n_repeats    = 100
     rmse_targets = [1.0, 1.1, 1.2]
-    N_iter       = 50   # LM converges fast; increase if needed
+    N_iter       = parse(Int, get(ENV, "LM_N_ITER", "50"))   # LM converges fast; increase if needed (env override for diagnostics runs)
 
     if case == :l63
         return (

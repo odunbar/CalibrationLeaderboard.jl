@@ -13,6 +13,8 @@ using EnsembleKalmanProcesses.Localizers
 
 const EKP = EnsembleKalmanProcesses
 
+include(joinpath(@__DIR__, "diagnostics", "ekp_diagnostics.jl"))
+
 include(joinpath(@__DIR__, "..", "..", "common", "forward_maps", "Lorenz63.jl")) # Contains Lorenz 96 source code
 
 verbose_flag = false
@@ -92,6 +94,10 @@ end
 ########################### Running EKI Race ###########################
 ########################################################################
 
+# diagnostics only: θ_true (log ρ, log β) mapped to the optimiser's unconstrained space
+ediag = EKPDiag(N_iter, 4, length(N_ens_sizes), length(rng_seeds), cov(prior),
+                transform_constrained_to_unconstrained(prior, log.([28.0, 8.0 / 3.0])))
+
 # Counters
 conv_alg_iters = zeros(4, length(N_ens_sizes), length(rng_seeds)) #count how many iterations it takes to converge (per algorithm, per rand seed, per ense size)
 final_parameters = zeros(4, length(N_ens_sizes), length(rng_seeds), nu)
@@ -146,6 +152,7 @@ for (rr, rng_seed) in enumerate(rng_seeds)
                 )
             end
             Ne = get_N_ens(ekpobj)
+            ekp_diag_begin_cell!(ediag, kk, ee, rr)   # diagnostics only
 
             count = 0
             for i in 1:N_iter
@@ -166,6 +173,7 @@ for (rr, rng_seed) in enumerate(rng_seeds)
                     conv_alg_iters[kk, ee, rr] = count * Ne
                     final_parameters[kk, ee, rr, :] = ens_mean
                     final_model_output[kk, ee, rr, :] = G_ens_mean
+                    ekp_diag_converged!(ediag, i, get_u_final(ekpobj), RMSE_e, isa(method, Unscented))   # diagnostics only
                     break
                 end
 
@@ -180,6 +188,8 @@ for (rr, rng_seed) in enumerate(rng_seeds)
                         ) for j in 1:Ne
                     ]...,
                 )
+                # diagnostics only: estimated gradient from the ensemble (u, G_ens); reads, never mutates
+                ekp_diag_observe!(ediag, i, get_u_final(ekpobj), G_ens, y, R_inv_var, isa(method, Unscented), RMSE_e)
                 # Update 
                 EKP.update_ensemble!(ekpobj, G_ens)
                 count = count + 1
@@ -217,4 +227,6 @@ JLD2.save(
     final_parameters,
     "final_model_output",
     final_model_output,
+    "diagnostics",
+    diagnostics_dict(ediag),
 )

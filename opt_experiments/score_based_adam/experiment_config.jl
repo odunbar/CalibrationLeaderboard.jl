@@ -60,6 +60,10 @@ function experiment_config(case::Symbol)
         kgmm_ridge   = 0.1,   # per-cluster covariance shrinkage toward the global
                               # covariance; K itself is chosen adaptively from the
                               # actual window size at fit time (see score_gfdt.jl)
+        collapse_tol = parse(Float64, get(ENV, "COLLAPSE_TOL", "1e-2")),
+                              # AD-fallback flag: a window is "collapsed" when min over components of
+                              # the temporal variance < collapse_tol (see is_collapsed_window in
+                              # score_gfdt.jl). 0 disables the fallback (GFDT every iteration).
         # Adam hyperparameters -- beta1/beta2/eps kept identical to
         # opt_experiments/adam; adam_alpha is set per-case below (NOT shared),
         # since a single global 0.001 (copied unchanged from opt_experiments/adam,

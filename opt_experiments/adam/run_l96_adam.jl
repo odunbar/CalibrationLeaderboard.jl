@@ -24,6 +24,7 @@ const _COMMON = joinpath(@__DIR__, "..", "..", "common")
 include(joinpath(_COMMON, "forward_maps", "Lorenz96.jl"))
 include(joinpath(_COMMON, "opt_metrics", "write_results_nc.jl"))
 include("experiment_config.jl")
+include(joinpath(@__DIR__, "diagnostics", "adam_diagnostics.jl"))
 
 ########################################################################
 ###############  Case-specific problem setup  #########################
@@ -151,6 +152,11 @@ function run_one(cfg, rmse_target, rng_idx, prob)
     final_params = fill(NaN, nu)
     final_output = fill(NaN, ny)
 
+    # diagnostics only: θ_true in the optimised space (flux NN weights are non-identifiable → none)
+    θ_true_diag = prob.case == "const-force" ? [log(prob.phi.val)] :
+                  prob.case == "vec-force"   ? prob.phi.val : nothing
+    adiag = AdamDiag(cfg.N_iter, θ_true_diag, prior_cov)
+
     for outer_iter in 1:cfg.N_iter
         x0p_all = x0 .+ ic_cov_sqrt * randn(rng, nx, N_ens)
 
@@ -167,11 +173,14 @@ function run_one(cfg, rmse_target, rng_idx, prob)
         J̃ = R_inv_var * (J_sum / N_ens)   # whitened Jacobian (ny × nu)
         r̃ = R_inv_var * (r_sum / N_ens)   # whitened residual (ny)
         RMSE = norm(r̃) / sqrt(ny)
+        statvar = mean(abs2, (y - r_sum / N_ens)[(nx + 1):end])   # diagnostics only: mean site variance
+        adam_diag_observe!(adiag, outer_iter, θ, J̃, r̃, statvar)
 
         if RMSE < rmse_target
             conv_score   = outer_iter * N_ens * (nu + 1)
             final_params = θ
             final_output = y - (r_sum / N_ens)
+            adam_diag_converged!(adiag, outer_iter, θ, J̃, r̃, statvar)
             break
         end
 
@@ -182,16 +191,19 @@ function run_one(cfg, rmse_target, rng_idx, prob)
         # ║  v_t = β₂ v_{t-1} + (1-β₂) g_t²         (second moment)                  ║
         # ║  θ_{t+1} = θ_t - α m̂_t / (√v̂_t + ε)    (bias-corrected update)           ║
         # ╚══════════════════════════════════════════════════════════════════════════╝
+        θ_pre = θ   # diagnostics only (θ is rebound below, never mutated)
         g  = -(J̃' * r̃)
         m  = β₁ * m + (1 - β₁) * g
         v  = β₂ * v + (1 - β₂) * g .* g
         m̂  = m / (1 - β₁^outer_iter)
         v̂  = v / (1 - β₂^outer_iter)
         θ  = θ - α * m̂ ./ (sqrt.(v̂) .+ ε)
+        adam_diag_step!(adiag, θ_pre, θ, g, m̂, v̂, J̃, α, ε)
     end
+    adam_diag_finish!(adiag, cfg.N_iter)
 
     @info "rmse_target=$(rmse_target)  rng_idx=$(rng_idx)  conv=$(conv_score)  ‖Δθ‖/‖θ₀‖=$(round(norm(θ - θ_init) / norm(θ_init); sigdigits=4))"
-    return (; conv_score, final_params, final_output)
+    return (; conv_score, final_params, final_output, diagnostics = diagnostics_dict(adiag.rec))
 end
 
 ########################################################################
@@ -223,6 +235,7 @@ function main()
             "final_output", result.final_output,
             "rmse_target",  rmse_target,
             "rng_idx",      rng_idx,
+            "diagnostics",  result.diagnostics,
         )
         @info "Saved: $fn"
     end

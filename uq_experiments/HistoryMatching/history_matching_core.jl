@@ -140,6 +140,40 @@ function fit_wave_gps(prob::HMProblem, theta_ens::AbstractMatrix, results::Abstr
     return WaveGPs(gps, ensemble_pca)
 end
 
+# Cheap emulator-quality diagnostic: closed-form leave-one-out (LOO) GP
+# predictions on the wave's own training set (no extra forward runs). For a
+# zero-mean GP with training covariance K (noise included) and alpha = K^-1 y:
+#   mu_loo_i = y_i - alpha_i / [K^-1]_ii ,   var_loo_i = 1 / [K^-1]_ii.
+# Per whitened output mode j returns
+#   loo_mse : mean squared LOO error, in whitened units — the observation noise
+#             is exactly 1 here, so loo_mse << 1 means the emulator error is
+#             negligible in the implausibility (1 + var), loo_mse >~ 1 means
+#             it is not resolving that mode;
+#   r2      : 1 - SSE_loo / SST (skill relative to predicting the mean);
+#   msse    : mean of (err^2 / var_loo) (~1 if the predictive variance is calibrated);
+#   cov95   : fraction of |err| <= 1.96 sqrt(var_loo) (~0.95 if calibrated).
+# Vectors have length k_R_out. `n_train` is the training-set size.
+function loo_diagnostics(wave::WaveGPs)
+    k = length(wave.gps)
+    loo_mse, r2, msse, cov95 = (fill(NaN, k) for _ in 1:4)
+    for j in 1:k
+        gp = wave.gps[j]
+        try
+            Kinv_diag = diag(inv(gp.cK))
+            err = gp.alpha ./ Kinv_diag          # y_i - mu_loo_i
+            v = 1 ./ Kinv_diag
+            sst = sum(abs2, gp.y .- mean(gp.y))
+            loo_mse[j] = mean(abs2, err)
+            r2[j] = sst > 0 ? 1 - sum(abs2, err) / sst : NaN
+            msse[j] = mean(err .^ 2 ./ v)
+            cov95[j] = mean(abs.(err) .<= 1.96 .* sqrt.(v))
+        catch e
+            @warn "LOO diagnostic failed for whitened output $j." exception = e
+        end
+    end
+    return (; loo_mse, r2, msse, cov95, n_train = wave.gps[1].nobs)
+end
+
 # theta_batch: D x M (raw) -> (mu: M x k_R_out, var: M x k_R_out), both in
 # prob.output_basis's whitened coordinates.
 function predict_wave(prob::HMProblem, wave::WaveGPs, theta_batch::AbstractMatrix)

@@ -31,6 +31,8 @@ const _COMMON = joinpath(@__DIR__, "..", "..", "common")
 include(joinpath(_COMMON, "forward_maps", "Lorenz63.jl"))
 include(joinpath(_COMMON, "opt_metrics", "write_results_nc.jl"))
 include("experiment_config.jl")
+include(joinpath(_COMMON, "diagnostics", "lm_diagnostics.jl"))
+include(joinpath(_COMMON, "diagnostics", "regime_diagnostics.jl"))
 include("score_gfdt.jl")
 include("score_nets.jl")
 include("gfdt_l63.jl")
@@ -115,6 +117,10 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
     final_params = fill(NaN, nu)
     final_output = fill(NaN, ny)
 
+    # diagnostics only: θ_true from l63_preliminaries.jl (log space)
+    ldiag = LMDiag(n_iter_for(cfg, N_ens), log.([28.0, 8.0 / 3.0]), cov(prior_dist))
+    describe_regime!(ldiag.rec)
+
     for outer_iter in 1:n_iter_for(cfg, N_ens)
         # :parallel spins up once onto the CURRENT theta's attractor, then forks
         # n_members branches from small perturbations of that shared state;
@@ -147,6 +153,8 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
             conv_score   = cost_accum
             final_params = θ
             final_output = G_bar
+            lm_diag_converged!(ldiag, outer_iter, θ, r̃, λ;   # diagnostics only (J̃ not built yet)
+                regime_values(Xs, cfg_k.dt, cfg, θ, θ_init, ldiag.Lp; extra = l63_regime_values(θ))...)
             break
         end
 
@@ -158,7 +166,10 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
         # well-posed on exactly those parameters, because no chaos means no
         # tangent-linear blow-up.  So: FDT where the measure is smooth, AD where
         # the tangent linear is stable, charged honestly either way.
-        if any(is_collapsed_window, Xs)
+        rec_now = want(ldiag.rec, outer_iter)   # diagnostics only: regime values are computed on recorded iterations
+        rprobe  = rec_now ? RespProbe(cfg_k.dt, cfg.lag_stride, cfg.tau_max) : nothing
+        res     = nothing
+        if any(X -> is_collapsed_window(X; tol = cfg.collapse_tol), Xs)
             J_per_member = Vector{Matrix{Float64}}(undef, n_members)
             Threads.@threads for k in 1:n_members
                 x0p_k  = x0p_all[:, k]
@@ -178,11 +189,13 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
                 (X, S) -> conjugate_variables_l63(X, S, θ),
                 dphi_dm_l63;
                 dt = cfg_k.dt, lag_stride = cfg.lag_stride, tau_max = cfg.tau_max,
-                tukey_alpha = cfg.tukey_alpha, stein = cfg.stein,
+                tukey_alpha = cfg.tukey_alpha, stein = cfg.stein, probe = rprobe,
             )
             J̃ = R_inv_var * res.J                # no extra forward evaluations
             gfdt_iters += 1
         end
+        lm_diag_observe!(ldiag, outer_iter, θ, J̃, r̃, λ; ad_iters_cum = ad_iters,   # diagnostics only
+            (rec_now ? regime_values(Xs, cfg_k.dt, cfg, θ, θ_init, ldiag.Lp; res, probe = rprobe, extra = l63_regime_values(θ)) : (;))...)
 
         # ─────────────────────────────────────────────────────────────────────
         # LM step via augmented-system QR (kept verbatim from levenberg_marquardt).
@@ -209,6 +222,8 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
 
         ρ = (norm(r̃)^2 - norm(r̃_trial)^2) / (norm(r̃)^2 - norm(J̃ * Δθ - r̃)^2)
 
+        lm_diag_step!(ldiag, θ, θ_trial, Δθ, J̃, r̃, r̃_trial, ρ)   # diagnostics only (θ is still pre-step)
+
         if ρ > 0
             θ = θ_trial
         end
@@ -219,10 +234,13 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
         end
     end
 
+    lm_diag_finish!(ldiag, n_iter_for(cfg, N_ens))
+
     @info "N_ens=$(N_ens) rmse_target=$(rmse_target) rng_idx=$(rng_idx) conv=$(conv_score) " *
           "gfdt_iters=$(gfdt_iters) ad_iters=$(ad_iters) " *
           "‖Δθ‖/‖θ₀‖=$(round(norm(θ - θ_init) / norm(θ_init); sigdigits=4))"
-    return (; conv_score, n_fwd_actual, ad_iters, gfdt_iters, final_params, final_output)
+    return (; conv_score, n_fwd_actual, ad_iters, gfdt_iters, final_params, final_output,
+              diagnostics = diagnostics_dict(ldiag.rec))
 end
 
 ########################################################################
@@ -260,7 +278,9 @@ function main()
             "rng_idx",      rng_idx,
             "rmse_target",  rmse_target,
             "score_kind",   String(cfg.score_kind),
+            "collapse_tol", cfg.collapse_tol,
             "budget_mode",  String(cfg.budget_mode),
+            "diagnostics",  result.diagnostics,
         )
         @info "Saved: $fn"
     end

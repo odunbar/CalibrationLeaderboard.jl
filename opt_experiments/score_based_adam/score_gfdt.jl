@@ -462,6 +462,7 @@ function gfdt_jacobian(
     tau_max::Real,
     tukey_alpha::Real = 0.5,
     stein::Bool = true,
+    probe = nothing,   # diagnostics only: probe(A, B) is called per member; never alters the result
 )
     As  = [moment_fn(X) for X in Xs]
     n_A = size(As[1], 1)
@@ -484,6 +485,7 @@ function gfdt_jacobian(
             S, stein_norm = stein_recalibrate(S, X)
         end
         B = conj_fn(X, S)
+        probe === nothing || probe(A, B)
         if acc === nothing
             acc   = ResponseAccumulator(n_A, size(B, 1))
             b_sum = zeros(size(B, 1))

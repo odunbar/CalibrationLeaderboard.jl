@@ -40,6 +40,8 @@ const _COMMON = joinpath(@__DIR__, "..", "..", "common")
 include(joinpath(_COMMON, "forward_maps", "Lorenz63.jl"))
 include(joinpath(_COMMON, "opt_metrics", "write_results_nc.jl"))
 include("experiment_config.jl")
+include(joinpath(@__DIR__, "diagnostics", "sbadam_diagnostics.jl"))
+include(joinpath(_COMMON, "diagnostics", "regime_diagnostics.jl"))
 include("score_gfdt.jl")
 include("score_nets.jl")
 include("gfdt_l63.jl")
@@ -128,6 +130,10 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
     final_params = fill(NaN, nu)
     final_output = fill(NaN, ny)
 
+    # diagnostics only: θ_true from l63_preliminaries.jl (log space)
+    adiag = AdamDiag(n_iter_for(cfg, N_ens), log.([28.0, 8.0 / 3.0]), cov(prior_dist))
+    describe_regime!(adiag.rec)
+
     for outer_iter in 1:n_iter_for(cfg, N_ens)
         # :parallel spins up once onto the CURRENT theta's attractor, then forks
         # n_members branches from small perturbations of that shared state;
@@ -151,6 +157,14 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
         end
         n_fwd_actual += n_members * fwd_unit
 
+        # Adam has no trust region: a large step can land on a θ where the integration overflows, and
+        # the KGMM fit then throws on a non-finite covariance. Treat a non-finite window as a diverged
+        # (failed) run -- conv_score stays NaN and the diagnostics recorded so far are kept.
+        if any(X -> !all(isfinite, X), Xs)
+            @warn "non-finite state window at outer_iter=$(outer_iter); run diverged" θ
+            break
+        end
+
         cost_accum += N_ens                      # the residual/state evaluation
         G_bar = mean(Gs)
         r̃ = R_inv_var * (y - G_bar)
@@ -160,6 +174,8 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
             conv_score   = cost_accum
             final_params = θ
             final_output = G_bar
+            adam_diag_converged!(adiag, outer_iter, θ, r̃, minimum(G_bar[4:6]);   # diagnostics only (J̃ not built yet)
+                regime_values(Xs, cfg_k.dt, cfg, θ, θ_init, adiag.Lp; extra = l63_regime_values(θ))...)
             break
         end
 
@@ -170,7 +186,10 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
         # ForwardDiff is well-posed on exactly those parameters, because no
         # chaos means no tangent-linear blow-up.  So: FDT where the measure is
         # smooth, AD where the tangent linear is stable, charged honestly either way.
-        if any(is_collapsed_window, Xs)
+        rec_now = want(adiag.rec, outer_iter)   # diagnostics only: regime values are computed on recorded iterations
+        rprobe  = rec_now ? RespProbe(cfg_k.dt, cfg.lag_stride, cfg.tau_max) : nothing
+        res     = nothing
+        if any(X -> is_collapsed_window(X; tol = cfg.collapse_tol), Xs)
             J_per_member = Vector{Matrix{Float64}}(undef, n_members)
             Threads.@threads for k in 1:n_members
                 x0p_k  = x0p_all[:, k]
@@ -190,11 +209,13 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
                 (X, S) -> conjugate_variables_l63(X, S, θ),
                 dphi_dm_l63;
                 dt = cfg_k.dt, lag_stride = cfg.lag_stride, tau_max = cfg.tau_max,
-                tukey_alpha = cfg.tukey_alpha, stein = cfg.stein,
+                tukey_alpha = cfg.tukey_alpha, stein = cfg.stein, probe = rprobe,
             )
             J̃ = R_inv_var * res.J                # no extra forward evaluations
             gfdt_iters += 1
         end
+        adam_diag_observe!(adiag, outer_iter, θ, J̃, r̃, minimum(G_bar[4:6]); ad_iters_cum = ad_iters,   # diagnostics only: min state variance in the window
+            (rec_now ? regime_values(Xs, cfg_k.dt, cfg, θ, θ_init, adiag.Lp; res, probe = rprobe, extra = l63_regime_values(θ)) : (;))...)
 
         # ╔══════════════════════════════════════════════════════════════════════════╗
         # ║  Adam step on L(θ) = ½ ‖r̃‖², with J̃ estimated via GFDT/score instead of ║
@@ -204,18 +225,22 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, problem)
         # ║  v_t = β₂ v_{t-1} + (1-β₂) g_t²         (second moment)              ║
         # ║  θ_{t+1} = θ_t - α m̂_t / (√v̂_t + ε)    (bias-corrected update)      ║
         # ╚══════════════════════════════════════════════════════════════════════════╝
+        θ_pre = θ   # diagnostics only (θ is rebound below, never mutated)
         g  = -(J̃' * r̃)
         m  = β₁ * m + (1 - β₁) * g
         v  = β₂ * v + (1 - β₂) * g .* g
         m̂  = m / (1 - β₁^outer_iter)
         v̂  = v / (1 - β₂^outer_iter)
         θ  = θ - α * m̂ ./ (sqrt.(v̂) .+ ε)
+        adam_diag_step!(adiag, θ_pre, θ, g, m̂, v̂, J̃, α, ε)
     end
+    adam_diag_finish!(adiag, n_iter_for(cfg, N_ens))
 
     @info "N_ens=$(N_ens) rmse_target=$(rmse_target) rng_idx=$(rng_idx) conv=$(conv_score) " *
           "gfdt_iters=$(gfdt_iters) ad_iters=$(ad_iters) " *
           "‖Δθ‖/‖θ₀‖=$(round(norm(θ - θ_init) / norm(θ_init); sigdigits=4))"
-    return (; conv_score, n_fwd_actual, ad_iters, gfdt_iters, final_params, final_output)
+    return (; conv_score, n_fwd_actual, ad_iters, gfdt_iters, final_params, final_output,
+              diagnostics = diagnostics_dict(adiag.rec))
 end
 
 ########################################################################
@@ -253,7 +278,9 @@ function main()
             "rng_idx",      rng_idx,
             "rmse_target",  rmse_target,
             "score_kind",   String(cfg.score_kind),
+            "collapse_tol", cfg.collapse_tol,
             "budget_mode",  String(cfg.budget_mode),
+            "diagnostics",  result.diagnostics,
         )
         @info "Saved: $fn"
     end

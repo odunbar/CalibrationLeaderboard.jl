@@ -20,6 +20,7 @@ const _COMMON = joinpath(@__DIR__, "..", "..", "common")
 include(joinpath(_COMMON, "forward_maps", "Lorenz63.jl"))
 include(joinpath(_COMMON, "opt_metrics", "write_results_nc.jl"))
 include("experiment_config.jl")
+include(joinpath(_COMMON, "diagnostics", "lm_diagnostics.jl"))
 
 ########################################################################
 ###############  Problem setup  #######################################
@@ -61,6 +62,9 @@ function run_one(cfg, rmse_target, rng_idx, problem)
     final_params = fill(NaN, nu)
     final_output = fill(NaN, ny)
 
+    # diagnostics only: θ_true from l63_preliminaries.jl (log space)
+    ldiag = LMDiag(cfg.N_iter, log.([28.0, 8.0 / 3.0]), cov(prior_dist))
+
     for outer_iter in 1:cfg.N_iter
         # Draw N_ens IC perturbations for this step.  Fixing them before calling
         # ForwardDiff ensures the Jacobian closure is deterministic (only θ is dual).
@@ -80,11 +84,13 @@ function run_one(cfg, rmse_target, rng_idx, problem)
         J̃ = R_inv_var * (J_sum / N_ens)   # whitened Jacobian (ny × nu)
         r̃ = R_inv_var * (r_sum / N_ens)   # whitened residual (ny)
         RMSE = norm(r̃) / sqrt(ny)
+        lm_diag_observe!(ldiag, outer_iter, θ, J̃, r̃, λ)   # diagnostics only
 
         if RMSE < rmse_target
             conv_score   = outer_iter * N_ens * (nu + 1)
             final_params = θ
             final_output = y - (r_sum / N_ens)
+            lm_diag_converged!(ldiag, outer_iter, θ, r̃, λ, J̃)
             break
         end
 
@@ -116,6 +122,8 @@ function run_one(cfg, rmse_target, rng_idx, problem)
         # Gain ratio: actual vs. predicted cost reduction
         ρ = (norm(r̃)^2 - norm(r̃_trial)^2) / (norm(r̃)^2 - norm(J̃ * Δθ - r̃)^2)
 
+        lm_diag_step!(ldiag, θ, θ_trial, Δθ, J̃, r̃, r̃_trial, ρ)   # diagnostics only (θ is still pre-step)
+
         if ρ > 0
             θ = θ_trial
         end
@@ -126,8 +134,10 @@ function run_one(cfg, rmse_target, rng_idx, problem)
         end
     end
 
+    lm_diag_finish!(ldiag, cfg.N_iter)
+
     @info "rmse_target=$(rmse_target)  rng_idx=$(rng_idx)  conv=$(conv_score)  ‖Δθ‖/‖θ₀‖=$(round(norm(θ - θ_init) / norm(θ_init); sigdigits=4))"
-    return (; conv_score, final_params, final_output)
+    return (; conv_score, final_params, final_output, diagnostics = diagnostics_dict(ldiag.rec))
 end
 
 ########################################################################
@@ -157,6 +167,7 @@ function main()
             "final_output", result.final_output,
             "rng_idx",      rng_idx,
             "rmse_target",  rmse_target,
+            "diagnostics",  result.diagnostics,
         )
         @info "Saved: $fn"
     end

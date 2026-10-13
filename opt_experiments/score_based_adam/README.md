@@ -57,6 +57,32 @@ pass** for the DSM/KGMM scores).
 and `Lorenz96.jl` define clashing `LorenzConfig` / `EnsembleMemberConfig` /
 `ObservationConfig`, so they can never be loaded together.
 
+## Adam hyperparameters
+
+| Parameter | Value | Role |
+|---|---|---|
+| α (`adam_alpha`) | per-experiment, see table below | Step size |
+| β₁ (`adam_beta1`) | 0.9   | First-moment decay |
+| β₂ (`adam_beta2`) | 0.999 | Second-moment decay |
+| ε (`adam_eps`)    | 1e-8  | Numerical stability |
+
+Unlike `opt_experiments/adam` (single global `α`), `α` here is **chosen per
+experiment based on that experiment's prior**, not shared across cases: a
+single global value (e.g. the `0.001` `opt_experiments/adam` uses for a
+differently-scaled residual) leaves Adam unable to traverse even the
+l63/l96_const prior within its iteration budget. Each `adam_alpha` below is
+sized to ~0.25x the case's mean prior std, so a run of consistent-sign steps
+crosses ~1 prior std in ~4 outer iterations:
+
+| Experiment | Prior std | `adam_alpha` |
+|---|---|---|
+| L63 (`:l63`)             | [0.15, 0.5] (log ρ, log β), mean 0.325 | 0.08  |
+| L96 const (`:l96_const`) | 0.4 (log forcing)                      | 0.1   |
+| L96 vec (`:l96_vec`)     | 3.0 (per-component forcing)            | 0.75  |
+| L96 flux (`:l96_flux`)   | 0.1 (NN weight space)                  | 0.025 |
+
+See `experiment_config.jl` for the per-case definitions.
+
 ## Arms
 
 Two independent switches, each combination a separate submission and netcdf:

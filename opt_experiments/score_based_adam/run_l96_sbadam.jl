@@ -39,6 +39,8 @@ const _COMMON = joinpath(@__DIR__, "..", "..", "common")
 include(joinpath(_COMMON, "forward_maps", "Lorenz96.jl"))
 include(joinpath(_COMMON, "opt_metrics", "write_results_nc.jl"))
 include("experiment_config.jl")
+include(joinpath(@__DIR__, "diagnostics", "sbadam_diagnostics.jl"))
+include(joinpath(_COMMON, "diagnostics", "regime_diagnostics.jl"))
 include("score_gfdt.jl")
 include("score_nets.jl")
 include("gfdt_l96.jl")
@@ -114,6 +116,12 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
     final_params = fill(NaN, nu)
     final_output = fill(NaN, ny)
 
+    # diagnostics only: θ_true in the optimised space (flux NN weights are non-identifiable → none)
+    θ_true_diag = case == "const-force" ? [log(prob.phi.val)] :
+                  case == "vec-force"   ? prob.phi.val : nothing
+    adiag = AdamDiag(n_iter_for(cfg, N_ens), θ_true_diag, prior_cov)
+    describe_regime!(adiag.rec)
+
     for outer_iter in 1:n_iter_for(cfg, N_ens)
         # :parallel spins up once onto the CURRENT theta's attractor, then forks
         # n_members branches from small perturbations of that shared state;
@@ -145,6 +153,8 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
             conv_score   = cost_accum
             final_params = theta
             final_output = G_bar
+            adam_diag_converged!(adiag, outer_iter, theta, rt, mean(abs2, G_bar[(nx + 1):end]);   # diagnostics only (Jt not built yet)
+                regime_values(Xs, cfg_k.dt, cfg, theta, theta_init, adiag.Lp; extra = l96_regime_values(forcing(make_emc(prob, theta), x0)))...)
             break
         end
 
@@ -154,7 +164,10 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
         # because there is no chaos to blow up the tangent linear.  So: FDT where
         # the measure is smooth, AD where the tangent linear is stable, charged
         # honestly either way.  (Rare for L96 with these priors; common for L63.)
-        if any(is_collapsed_window, Xs)
+        rec_now = want(adiag.rec, outer_iter)   # diagnostics only: regime values are computed on recorded iterations
+        rprobe  = rec_now ? RespProbe(cfg_k.dt, cfg.lag_stride, cfg.tau_max) : nothing
+        res     = nothing
+        if any(X -> is_collapsed_window(X; tol = cfg.collapse_tol), Xs)
             J_per_member = Vector{Matrix{Float64}}(undef, n_members)
             Threads.@threads for k in 1:n_members
                 x0p_k  = x0p_all[:, k]
@@ -173,11 +186,14 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
                 (X, S) -> conjugate_variables_l96(case, X, S, theta, prob),
                 m -> dphi_dm_l96(m, nx);
                 dt = cfg_k.dt, lag_stride = cfg.lag_stride, tau_max = cfg.tau_max,
-                tukey_alpha = cfg.tukey_alpha, stein = cfg.stein,
+                tukey_alpha = cfg.tukey_alpha, stein = cfg.stein, probe = rprobe,
             )
             Jt = R_inv_var * res.J               # no extra forward evaluations
             gfdt_iters += 1
         end
+        adam_diag_observe!(adiag, outer_iter, theta, Jt, rt, mean(abs2, G_bar[(nx + 1):end]); ad_iters_cum = ad_iters,   # diagnostics only: mean site variance
+            (rec_now ? regime_values(Xs, cfg_k.dt, cfg, theta, theta_init, adiag.Lp; res, probe = rprobe,
+                                     extra = l96_regime_values(forcing(make_emc(prob, theta), x0))) : (;))...)
 
         # Adam step on L(theta) = 1/2 ||rt||^2, with Jt estimated via GFDT/score
         # instead of ForwardDiff (kept verbatim from opt_experiments/adam otherwise):
@@ -185,18 +201,22 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
         #   m_t     = beta1*m_{t-1} + (1-beta1)*g_t
         #   v_t     = beta2*v_{t-1} + (1-beta2)*g_t^2
         #   theta_t = theta_{t-1} - alpha * m_hat / (sqrt(v_hat) + eps)
+        theta_pre = theta   # diagnostics only (theta is rebound below, never mutated)
         g  = -(Jt' * rt)
         m  = beta1 * m + (1 - beta1) * g
         v  = beta2 * v + (1 - beta2) * g .* g
         mhat = m / (1 - beta1^outer_iter)
         vhat = v / (1 - beta2^outer_iter)
         theta = theta - alpha * mhat ./ (sqrt.(vhat) .+ epsad)
+        adam_diag_step!(adiag, theta_pre, theta, g, mhat, vhat, Jt, alpha, epsad)
     end
+    adam_diag_finish!(adiag, n_iter_for(cfg, N_ens))
 
     @info "N_ens=$(N_ens) rmse_target=$(rmse_target) rng_idx=$(rng_idx) conv=$(conv_score) " *
           "gfdt_iters=$(gfdt_iters) ad_iters=$(ad_iters) " *
           "norm-step=$(round(norm(theta - theta_init) / norm(theta_init); sigdigits=4))"
-    return (; conv_score, n_fwd_actual, ad_iters, gfdt_iters, final_params, final_output)
+    return (; conv_score, n_fwd_actual, ad_iters, gfdt_iters, final_params, final_output,
+              diagnostics = diagnostics_dict(adiag.rec))
 end
 
 ########################################################################
@@ -236,7 +256,9 @@ function main()
             "rng_idx",      rng_idx,
             "rmse_target",  rmse_target,
             "score_kind",   String(cfg.score_kind),
+            "collapse_tol", cfg.collapse_tol,
             "budget_mode",  String(cfg.budget_mode),
+            "diagnostics",  result.diagnostics,
         )
         @info "Saved: $fn"
     end
