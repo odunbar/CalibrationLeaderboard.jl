@@ -29,7 +29,8 @@ all experiments and both leaderboard types:
 common/
 ├── forward_maps/    ← Lorenz63.jl, Lorenz96.jl (and future models)
 ├── opt_metrics/     ← RMSE-to-target scorer + write_results_nc()
-└── uq_metrics/      ← coverage-at-quantiles scorer + uq NetCDF writer
+├── uq_metrics/      ← coverage-at-quantiles scorer + uq NetCDF writer
+└── diagnostics/     ← shared per-iteration diagnostics machinery (recorder, combine, plot core, file grammar)
 ```
 
 See `references/common-layout.md` for the full canonical layout.
@@ -256,9 +257,15 @@ Before starting any task, check what is already in common/:
 find common -type f | sort
 ```
 
-As of 2026-06-22, `forward_maps/` contains `Lorenz63.jl` and `Lorenz96.jl`
+As of 2026-10-13, `forward_maps/` contains `Lorenz63.jl` and `Lorenz96.jl`
 (each with `PerfectDataConfig`, `compute_perfect_data`, `save_preliminaries`,
-and `load_preliminaries`); `opt_metrics/` and `uq_metrics/` are still empty.
+and `load_preliminaries`); `opt_metrics/` has `write_results_nc.jl`;
+`uq_metrics/` has `coverage_metrics.jl` and `prior_transforms.jl`;
+`diagnostics/` is owned by the **algorithm-diagnoser** skill (see
+`references/common-layout.md` § diagnostics/): it holds code that is used
+by several methods' diagnostics and is included by `run_*.jl` as well as by
+the offline combine/plot scripts. When adding diagnostics code, check there
+first and follow that skill's rule for what stays method-local.
 
 Every UQ method now keeps exactly one `experiment_config.jl`, living in the
 method directory — `hpc-variant/` never has its own copy (see

@@ -6,11 +6,17 @@ common/
 │   ├── Lorenz63.jl          ← L63 model (lorenz_forward, lorenz_solve, stats, f, RK4)
 │   └── Lorenz96.jl          ← L96 model (const/vec/flux forcing subtypes + train_network)
 ├── opt_metrics/
-│   ├── opt_score.jl         ← RMSE-to-target convergence score (from EKP/CBO run scripts)
 │   └── write_results_nc.jl  ← write_results_nc() from CBO's jld2_to_netcdf_for_leaderboard.jl
-└── uq_metrics/
-    ├── coverage_metrics.jl  ← coverage-at-quantiles + budget-to-target computation
-    └── write_uq_nc.jl       ← NetCDF writer extracted from exp_to_leaderboard.jl
+├── uq_metrics/
+│   ├── coverage_metrics.jl  ← coverage-at-quantiles + budget-to-target computation
+│   └── prior_transforms.jl
+└── diagnostics/             ← shared by every method's <method>/diagnostics/ (algorithm-diagnoser)
+    ├── diag_recorder.jl         ← thinning per-iteration recorder (Base only; included by run_*.jl)
+    ├── lm_diagnostics.jl        ← LMDiag (levenberg_marquardt and score_based_lm)
+    ├── regime_diagnostics.jl    ← chaotic-regime diagnostics (score_based_lm and score_based_adam)
+    ├── diag_files.jl            ← module DiagFiles: filename grammar, canonical key aliases, loaders
+    ├── combine_core.jl          ← module DiagCombine: per-run diagnostics → one combined file
+    └── diagnosis_plot_core.jl   ← module DiagPlot: the diagnosis figure from a combined file
 ```
 
 Additional subdirs to create when needed (discuss with user first):
@@ -44,6 +50,29 @@ They are currently byte-identical in:
 - `build_forcing(::T, val, args...)`, `forcing(params, x, i)`, `forcing(params, x)`
 - `train_network(model, x_train, y_train)` (Flux, 5000 epochs, Adam, MSE)
 - `lorenz_forward`, `lorenz_solve`, `stats` (→ `2*N_state`: means then stds), `f`, `RK4`
+
+### diagnostics/
+
+Two kinds of file, with different rules:
+
+- **Included by `run_*.jl`** (`diag_recorder.jl`, `lm_diagnostics.jl`,
+  `regime_diagnostics.jl`): Base + LinearAlgebra + Statistics only, no RNG,
+  no forward evaluations, no mutation of algorithm state. A run script
+  includes them with `include(joinpath(_COMMON, "diagnostics", "<file>.jl"))`.
+  Adding a package here would force a cluster re-precompile.
+- **Offline** (`diag_files.jl`, `combine_core.jl`, `diagnosis_plot_core.jl`):
+  each defines a module (`DiagFiles`, `DiagCombine`, `DiagPlot`) so its names
+  cannot collide with a method's script. They may use JLD2 / Plots, which every
+  experiment `Project.toml` already lists. A script loads one with
+  `include(joinpath(@__DIR__, "..", "..", "..", "common", "diagnostics", "<file>.jl"))`
+  followed by `using .DiagCombine` (from `<method>/diagnostics/`, three levels
+  below the repo root's `common/`).
+
+Method-specific diagnostics (`adam_diagnostics.jl`, `sbadam_diagnostics.jl`:
+different call signatures, different keys) stay in `<method>/diagnostics/`.
+A diagnostics file moves here only when two or more methods use it as is; if
+the copies differ by an optional argument, merge them into the superset (as with
+`lm_diagnostics.jl`'s `extras...`) and say so.
 
 ### opt_metrics/
 
@@ -92,15 +121,19 @@ are computed-but-de-emphasised (display_metrics defaults skip them).
 
 ## Include-path table
 
-All experiment scripts are one level below the repo root:
-`{uq,opt}_experiments/<method_name>/script.jl`
+Experiment scripts are two levels below the repo root:
+`{uq,opt}_experiments/<method_name>/script.jl` (`<method_name>/diagnostics/` and
+`hpc-variant/` are three levels; cross-method `{opt,uq}_experiments/diagnostics/<topic>/`
+is three levels too, so use `dirname` from `@__DIR__` or one more `".."`).
 
-| Target file | Include statement |
+| Target file | Include statement (script in `<method_name>/`) |
 |---|---|
-| `common/forward_maps/Lorenz63.jl` | `include(joinpath(@__DIR__, "..", "common", "forward_maps", "Lorenz63.jl"))` |
-| `common/forward_maps/Lorenz96.jl` | `include(joinpath(@__DIR__, "..", "common", "forward_maps", "Lorenz96.jl"))` |
-| `common/opt_metrics/write_results_nc.jl` | `include(joinpath(@__DIR__, "..", "common", "opt_metrics", "write_results_nc.jl"))` |
-| `common/uq_metrics/coverage_metrics.jl` | `include(joinpath(@__DIR__, "..", "common", "uq_metrics", "coverage_metrics.jl"))` |
+| `common/forward_maps/Lorenz63.jl` | `include(joinpath(@__DIR__, "..", "..", "common", "forward_maps", "Lorenz63.jl"))` |
+| `common/forward_maps/Lorenz96.jl` | `include(joinpath(@__DIR__, "..", "..", "common", "forward_maps", "Lorenz96.jl"))` |
+| `common/opt_metrics/write_results_nc.jl` | `include(joinpath(@__DIR__, "..", "..", "common", "opt_metrics", "write_results_nc.jl"))` |
+| `common/uq_metrics/coverage_metrics.jl` | `include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "coverage_metrics.jl"))` |
+| `common/diagnostics/lm_diagnostics.jl` (run script) | `include(joinpath(_COMMON, "diagnostics", "lm_diagnostics.jl"))` with `_COMMON = joinpath(@__DIR__, "..", "..", "common")` |
+| `common/diagnostics/combine_core.jl` (script in `<method_name>/diagnostics/`) | `include(joinpath(@__DIR__, "..", "..", "..", "common", "diagnostics", "combine_core.jl"))` |
 
 Always use `@__DIR__` (the directory of the current *file*), never `pwd()` or
 a bare relative path, so scripts run correctly regardless of the working directory
@@ -108,10 +141,10 @@ when Julia was invoked.
 
 ---
 
-## Current state of common/ (as of 2026-06-22)
+## Current state of common/
 
-All three subdirs exist and are **empty** — created as scaffolding.
-Run `find common -type f | sort` to see the current state before any task.
+Run `find common -type f | sort` to see the current state before any task
+(the tree above lists what existed on 2026-10-13).
 
 ## Files NOT to migrate (stay local)
 
