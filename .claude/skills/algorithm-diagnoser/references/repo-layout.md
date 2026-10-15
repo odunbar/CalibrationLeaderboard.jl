@@ -165,7 +165,7 @@ Every experiment `Project.toml` has JLD2 and Plots/StatsPlots. uq ones also have
   `*_diagnostics.jl`, a thin `combine_diagnostics.jl` and
   `experiment_diagnosis_visualization.jl`.
 - Shared code: `common/diagnostics/`: `diag_recorder.jl`, `lm_diagnostics.jl`,
-  `regime_diagnostics.jl` (included by `run_*.jl`), and the offline modules
+  `regime_diagnostics.jl`, `checkpoint.jl` (mid-run `<result>_partial.jld2` for HPC time-outs; `partial_path`, `save_checkpoint`) (included by `run_*.jl`), and the offline modules
   `diag_files.jl` (`DiagFiles`: filename grammar, canonical-key aliases,
   `find_combined`, `find_combined_by_tag`, `resolve_series`), `combine_core.jl`
   (`DiagCombine.combine_opt`, `write_combined`) and `diagnosis_plot_core.jl`

@@ -96,3 +96,4 @@ function adam_diag_step!(d::AdamDiag, θ_pre, θ_new, g, m̂, v̂, J̃, α, ε)
     d.dr_pred = -(J̃ * Δθ)
     return d
 end
+

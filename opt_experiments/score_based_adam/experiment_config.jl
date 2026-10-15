@@ -67,6 +67,11 @@ function experiment_config(case::Symbol)
                               # the AD Jacobian in flagged windows is ~1e35-1e47 and LM stalls (see
                               # diagnostics/score-regime-dependence/regime_paths_flux.jl). Set COLLAPSE_TOL=1e-2
                               # for the previous behaviour (the L63 fixed-point regime).
+        checkpoint_every = parse(Int, get(ENV, "CKPT_EVERY", "10")),
+                              # every this many iterations the run writes the diagnostics recorded so far (+ current θ) to
+                              # <result>_partial.jld2, so a task killed by the wall-clock limit still leaves its trajectory.
+                              # 0 disables. The partial file is deleted when the cell finishes and is never read by
+                              # run_to_leaderboard.jl (which looks up the exact result filename).
         # Adam hyperparameters -- beta1/beta2/eps kept identical to
         # opt_experiments/adam; adam_alpha is set per-case below (NOT shared),
         # since a single global 0.001 (copied unchanged from opt_experiments/adam,

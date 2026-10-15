@@ -14,6 +14,7 @@ common/
     ├── diag_recorder.jl         ← thinning per-iteration recorder (Base only; included by run_*.jl)
     ├── lm_diagnostics.jl        ← LMDiag (levenberg_marquardt and score_based_lm)
     ├── regime_diagnostics.jl    ← chaotic-regime diagnostics (score_based_lm and score_based_adam)
+    ├── checkpoint.jl            ← partial_path / save_checkpoint: mid-run <result>_partial.jld2 (score_based_lm and score_based_adam; uses JLD2, already loaded by the run scripts)
     ├── diag_files.jl            ← module DiagFiles: filename grammar, canonical key aliases, loaders
     ├── combine_core.jl          ← module DiagCombine: per-run diagnostics → one combined file
     └── diagnosis_plot_core.jl   ← module DiagPlot: the diagnosis figure from a combined file
@@ -56,7 +57,8 @@ They are currently byte-identical in:
 Two kinds of file, with different rules:
 
 - **Included by `run_*.jl`** (`diag_recorder.jl`, `lm_diagnostics.jl`,
-  `regime_diagnostics.jl`): Base + LinearAlgebra + Statistics only, no RNG,
+  `regime_diagnostics.jl`, `checkpoint.jl`): Base + LinearAlgebra + Statistics only
+  (`checkpoint.jl` also uses JLD2, which every run script already loads), no RNG,
   no forward evaluations, no mutation of algorithm state. A run script
   includes them with `include(joinpath(_COMMON, "diagnostics", "<file>.jl"))`.
   Adding a package here would force a cluster re-precompile.

@@ -41,6 +41,7 @@ include(joinpath(_COMMON, "opt_metrics", "write_results_nc.jl"))
 include("experiment_config.jl")
 include(joinpath(@__DIR__, "diagnostics", "sbadam_diagnostics.jl"))
 include(joinpath(_COMMON, "diagnostics", "regime_diagnostics.jl"))
+include(joinpath(_COMMON, "diagnostics", "checkpoint.jl"))
 include("score_gfdt.jl")
 include("score_nets.jl")
 include("gfdt_l96.jl")
@@ -81,7 +82,7 @@ end
 ###############  Run one (N_ens, rmse_target, rng_idx) cell  ##########
 ########################################################################
 
-function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
+function run_one(cfg, N_ens, rmse_target, rng_idx, prob; ckpt = nothing)
     (; x0, y, R_inv_var, ic_cov_sqrt, lorenz_cfg, nx, ny, nu, prior_mean, prior_cov, case) = prob
 
     # Two independent streams: consuming `rng` inside score training would make the
@@ -209,6 +210,10 @@ function run_one(cfg, N_ens, rmse_target, rng_idx, prob)
         vhat = v / (1 - beta2^outer_iter)
         theta = theta - alpha * mhat ./ (sqrt.(vhat) .+ epsad)
         adam_diag_step!(adiag, theta_pre, theta, g, mhat, vhat, Jt, alpha, epsad)
+        (cfg.checkpoint_every > 0 && outer_iter % cfg.checkpoint_every == 0) &&   # mid-run checkpoint (HPC time-outs), see save_checkpoint
+            save_checkpoint(ckpt, adiag.rec; iter_done = outer_iter, n_iter = n_iter_for(cfg, N_ens), conv_score = NaN, ad_iters, gfdt_iters,
+                final_params = copy(theta), N_ens, rng_idx, rmse_target, score_kind = String(cfg.score_kind), collapse_tol = cfg.collapse_tol,
+                budget_mode = String(cfg.budget_mode))
     end
     adam_diag_finish!(adiag, n_iter_for(cfg, N_ens))
 
@@ -243,8 +248,8 @@ function main()
     for t in run_cells
         N_ens, rmse_target, rng_idx = tasks[t]
         @info "Task $t: case=$case  N_ens=$N_ens  rmse_target=$rmse_target  rng_idx=$rng_idx"
-        result = run_one(cfg, N_ens, rmse_target, rng_idx, prob)
         fn = joinpath(output_dir, result_filename(cfg, N_ens, rmse_target, rng_idx))
+        result = run_one(cfg, N_ens, rmse_target, rng_idx, prob; ckpt = partial_path(fn))
         JLD2.save(fn,
             "conv_score",   result.conv_score,
             "n_fwd_actual", result.n_fwd_actual,
@@ -261,6 +266,7 @@ function main()
             "diagnostics",  result.diagnostics,
         )
         @info "Saved: $fn"
+        isfile(partial_path(fn)) && rm(partial_path(fn); force = true)   # the finished result supersedes the checkpoint
     end
 end
 

@@ -3,7 +3,7 @@
 #
 # L63 has a 2-D θ, so regime_paths_l63.jl draws paths over a (log ρ, log β) map. Here θ is the 61 weights of the forcing NN, so the
 # regime is read off two scalars that the run already records at every iteration (regime_diagnostics.jl):
-#   F_min          min over sites of the forcing F(x; θ)       (the physical regime parameter, see score_based_lm/diagnostics/regime_map_flux.jl)
+#   F_min          min over sites of the forcing F(x; θ)       (the physical regime parameter, see regime_map_flux.jl in this directory)
 #   log10_varmin   log10 of the smallest per-site temporal variance in the run's window   (flag fires below −2)
 # Three panels:
 #   A  regime plane: OFFLINE prior-draw map (grey/orange dots from regime_map_flux.jl: 200 draws, flagged or not) with each run's
@@ -19,7 +19,7 @@
 #
 # Runs are made by the method's own run script (N_ens = 10, rmse_target = 1.0, kgmm / parallel), task index = seed:
 #   EXPERIMENT=l96_flux SCORE_KIND=kgmm BUDGET_MODE=parallel RUN_DATE=2099-01-06 julia --project=../score_based_lm run_l96_sblm.jl <seed>
-# Background map: julia --project=. diagnostics/regime_map_flux.jl   (from score_based_lm/)
+# Background map: julia --project=../../score_based_lm regime_map_flux.jl   (this directory)
 #
 #   julia --project=../../score_based_lm regime_paths_flux.jl        # from this directory
 # Env: PATH_DATES=2099-01-04,2099-01-06 (result dates to pool), PATH_N=10, PATH_SEEDS=1,...,16 (default: every file found)
@@ -68,7 +68,7 @@ end
 
 # ---- figure
 BLUE, ORANGE, GREY = "#2a78d6", "#eb6834", "#9a9a9a"
-bg = joinpath(OPT, "score_based_lm", "diagnostics", "output", "regime_map_flux_draws.jld2")
+bg = joinpath(OUT, "regime_map_flux_draws.jld2")
 fs = (titlefontsize = 17, guidefontsize = 14, tickfontsize = 11, legend_font_pointsize = 10, background_color_legend = RGBA(1, 1, 1, 0.9))
 
 pA = plot(; xlabel = "F_min at θ", ylabel = "log10 min-site variance", title = "regime plane", legend = :bottomright,
@@ -78,7 +78,7 @@ if isfile(bg)
     scatter!(pA, d["Fmin"][.!c], d["lvmin"][.!c]; color = GREY, alpha = 0.35, markerstrokewidth = 0, markersize = 4, label = "prior draws, not flagged")
     scatter!(pA, d["Fmin"][c], d["lvmin"][c]; color = ORANGE, alpha = 0.25, markerstrokewidth = 0, markersize = 4, label = "prior draws, flagged")
 else
-    @warn "no background map at $bg (run score_based_lm/diagnostics/regime_map_flux.jl)"
+    @warn "no background map at $bg (run regime_map_flux.jl in this directory)"
 end
 hline!(pA, [THRESH]; color = :black, ls = :dot, label = "flag threshold")
 pB = plot(; xlabel = "LM iteration", ylabel = "log10 min-site variance", title = "window regime along the run", legend = false,
