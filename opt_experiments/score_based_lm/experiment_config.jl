@@ -67,10 +67,13 @@ function experiment_config(case::Symbol)
         kgmm_ridge   = 0.1,   # per-cluster covariance shrinkage toward the global
                               # covariance; K itself is chosen adaptively from the
                               # actual window size at fit time (see score_gfdt.jl)
-        collapse_tol = parse(Float64, get(ENV, "COLLAPSE_TOL", "1e-2")),
+        collapse_tol = parse(Float64, get(ENV, "COLLAPSE_TOL", "0")),
                               # AD-fallback flag: a window is "collapsed" when min over components of
                               # the temporal variance < collapse_tol (see is_collapsed_window in
-                              # score_gfdt.jl). 0 disables the fallback (GFDT every iteration).
+                              # score_gfdt.jl). Default 0 = fallback OFF (GFDT every iteration): on l96_flux
+                              # the AD Jacobian in flagged windows is ~1e35-1e47 and LM stalls (see
+                              # diagnostics/score-regime-dependence/regime_paths_flux.jl). Set COLLAPSE_TOL=1e-2
+                              # for the previous behaviour (the L63 fixed-point regime).
     )
 
     if case == :l63
