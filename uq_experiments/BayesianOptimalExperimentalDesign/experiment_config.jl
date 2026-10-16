@@ -55,7 +55,7 @@ method_key = Dict(:tmcmc_eig => "boed-tmcmc-eig", :tmcmc => "boed-tmcmc", :iekf_
 #    gp_g_tol, gp_f_reltol: gradient / relative-improvement stopping tolerances for the GP fit.
 #    gp_warm_start:         (off by default: in benchmarks it cost 2-11 nats of marginal likelihood for a further ~1.5x speedup in 24-D only) start each iteration's GP fit from the previous iteration's hyperparameters (clamped inside the new bounds) instead of the std(Z)-based guess.
 #    batch_init_strategy:   :posterior_subsample (subsample the current ST-MCMC posterior) or :fresh_lhs (a fresh LHS draw).
-#    iekf_step, iekf_iters: (:iekf and :iekf_eig variants only) fixed-step DefaultScheduler size and number of steps for the GP-surrogate IEKF posterior sampler (iekf_step*iekf_iters = 1).
+#    iekf_step, iekf_iters: (:iekf and :iekf_eig variants only) fixed-step DefaultScheduler size and number of steps for the GP-surrogate IEKF posterior sampler (iekf_step*iekf_iters = T: now 0.1 × 30 = 3; it was 0.1 × 10 = 1).
 #    retain_var:            fraction of variance retained by the GP's OUTPUT whitening (against R).
 #    retain_var_input:      fraction of variance retained by the GP's INPUT whitening (against the prior); also the GBOED candidate space's dimension, so set per case (0.99 for l63/l96_const's small θ, 0.9 for l96_vec/l96_flux's slowly-decaying prior spectrum).
 function experiment_config(case::Symbol)
@@ -83,7 +83,7 @@ function experiment_config(case::Symbol)
         batch_init_strategy = :posterior_subsample,
         retain_var = 0.99,
         iekf_step = 0.1,   # :iekf/:iekf_eig variants only: fixed DefaultScheduler step (matches GaussNewtonKalmanInversion / CES's IEKF)
-        iekf_iters = 10,   # :iekf/:iekf_eig variants only: iekf_iters * iekf_step = 1, the finite-time approximate posterior
+        iekf_iters = 30,   # :iekf/:iekf_eig variants only: 30 steps of 0.1 (T = 3; was 10 steps, T = 1, the finite-time approximate posterior)
         variant = boed_variant,
         calibrate_date = calibrate_date,
     )

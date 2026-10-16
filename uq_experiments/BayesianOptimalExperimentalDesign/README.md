@@ -107,7 +107,7 @@ Hyphens are accepted in the env var (`BOED_VARIANT=tmcmc-eig`). The former
 
 `tmcmc` isolates how much the EIG optimization buys over simply sampling the
 posterior. `iekf` additionally replaces ST-MCMC with a cheap sampler:
-`GaussNewtonInversion` (fixed-step `DefaultScheduler(0.1)`, 10 steps, so T = 1)
+`GaussNewtonInversion` (fixed-step `DefaultScheduler(0.1)`, 30 steps, so T = 3; it was 10 steps, T = 1)
 run on the GP-*mean* forward map for an ensemble of `n_posterior_samples`
 LHS-prior draws, in the truncated prior-whitened input space (prior `N(0, I)`)
 against the truncated output-whitened observation (noise `I`). No forward-model

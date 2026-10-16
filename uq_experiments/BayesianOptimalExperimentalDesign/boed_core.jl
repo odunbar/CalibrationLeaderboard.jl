@@ -16,6 +16,7 @@ using EnsembleKalmanProcesses.ParameterDistributions: ParameterDistribution, Par
 
 include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "coverage_metrics.jl"))
 include(joinpath(@__DIR__, "..", "..", "common", "uq_metrics", "prior_transforms.jl"))
+include(joinpath(@__DIR__, "diagnostics", "boed_diagnostics.jl"))   # per-iteration diagnostics; only called when the calibrate scripts' recorder is enabled
 
 # Fixes a GaussianProcesses.jl 0.12 / PDMats.jl `ldiv!` ambiguity that would
 # otherwise silently leave every GP at its un-optimized initial hyperparameters.
@@ -246,7 +247,7 @@ end
 
 # Draws posterior samples via TransitionalMCMC.jl's `tmcmc`; transposes at the boundary since tmcmc uses samples-as-rows internally.
 # `burnin`/`thin` are exposed below tmcmc's own 20/3 defaults since they directly multiply its (effectively serial) per-stage cost.
-function run_tmcmc(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::AbstractRNG; burnin::Int = 5, thin::Int = 1)
+function run_tmcmc(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::AbstractRNG; burnin::Int = 5, thin::Int = 1, diag::Union{Nothing, AbstractDict} = nothing)
     k_R_prior = prob.prior_basis.k_R
     # Reports progress within a tempering stage, since tmcmc's own logging is only per-stage.
     n_calls = Ref(0)
@@ -263,6 +264,11 @@ function run_tmcmc(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::Abstrac
     priorRnd(n) = Matrix(lhs_standard_normal_sample(k_R_prior, n, rng)')   # n x k_R_prior, per tmcmc's row-major convention
     samps, _log_ev = TransitionalMCMC.tmcmc(loglik, logprior, priorRnd, n_samples, burnin, thin)
     @info "run_tmcmc: done" total_loglik_evals = n_calls[] elapsed_s = round(time() - t_start; digits = 2)
+    if diag !== nothing
+        diag["tmcmc_log_ev"] = Float64(_log_ev)
+        diag["tmcmc_loglik_calls"] = n_calls[]
+        diag["tmcmc_secs"] = time() - t_start
+    end
     return Matrix(reshape(samps, n_samples, k_R_prior)')   # back to k_R_prior x n_samples
 end
 
@@ -341,6 +347,7 @@ struct EIGCallLimitReached <: Exception end
 function run_fminbox_with_call_limit(
     neg_eig_raw::Function, x_init::AbstractVector, lo::Union{Nothing, AbstractVector}, hi::Union{Nothing, AbstractVector};
     iters::Int, outer_iters::Int, g_tol::Real, f_reltol::Real, call_limit::Int, label::AbstractString,
+    diag::Union{Nothing, AbstractDict} = nothing,
 )
     bounded = lo !== nothing
     if bounded
@@ -390,6 +397,13 @@ function run_fminbox_with_call_limit(
         hit_limit = true
     end
     @info "$label: done" converged outer_rounds objective_evals = n_calls[] elapsed_s = round(time() - t0; digits = 2)
+    if diag !== nothing
+        diag["eig_opt_final"] = -best_val[]
+        diag["eig_opt_calls"] = n_calls[]
+        diag["eig_converged"] = converged ? 1.0 : 0.0
+        diag["eig_hit_limit"] = hit_limit ? 1.0 : 0.0
+        diag["eig_opt_secs"] = time() - t0
+    end
     if hit_limit
         @warn "$label: hit the EIG evaluation call_limit ($call_limit) before Optim's own convergence criteria were satisfied — the returned point(s) may be under-optimized. Consider raising cfg.eig_call_limit if this happens often." objective_evals = n_calls[] elapsed_s = round(time() - t0; digits = 2)
     elseif !converged && bounded && outer_rounds >= outer_iters
@@ -429,7 +443,7 @@ function optimize_batch(
     X_init::AbstractMatrix, X_post::AbstractMatrix, hyperparams_by_dim, k_R_prior::Int, B::Int;
     bound_std::Real = 4.0, iters::Int, outer_iters::Int = 20, jitter::Real,
     g_tol::Real = 1e-3, f_reltol::Real = 1e-6, call_limit::Int = 5_000,
-    region::Symbol = :box, ball_quantile::Real = 0.999,
+    region::Symbol = :box, ball_quantile::Real = 0.999, diag::Union{Nothing, AbstractDict} = nothing,
 )
     neg_eig_raw(x) = -eig_objective(x, X_post, hyperparams_by_dim, k_R_prior, B; jitter = jitter)
     if region === :box
@@ -438,7 +452,7 @@ function optimize_batch(
         x_star, _ = run_fminbox_with_call_limit(
             neg_eig_raw, vec(X_init), lo, hi;
             iters = iters, outer_iters = outer_iters, g_tol = g_tol, f_reltol = f_reltol,
-            call_limit = call_limit, label = "optimize_batch",
+            call_limit = call_limit, label = "optimize_batch", diag = diag,
         )
         return reshape(x_star, k_R_prior, B)
     elseif region === :ball
@@ -447,7 +461,7 @@ function optimize_batch(
         v_star, _ = run_fminbox_with_call_limit(
             neg_eig_v, vec(ball_unsquash(Matrix(X_init), R)), nothing, nothing;
             iters = iters, outer_iters = outer_iters, g_tol = g_tol, f_reltol = f_reltol,
-            call_limit = call_limit, label = "optimize_batch",
+            call_limit = call_limit, label = "optimize_batch", diag = diag,
         )
         return ball_squash(reshape(v_star, k_R_prior, B), R)
     else
@@ -556,8 +570,8 @@ end
 
 # IEKF = GaussNewtonInversion, run on the GP-mean forward map (no true forward evaluations) in the truncated prior-whitened input space (prior N(0, I_k)) against the truncated
 # output-whitened observation (noise I, matching boed_loglik's Γ_obs≈I; unlike ST-MCMC it ignores the GP predictive variance). Starts from n_samples LHS prior draws, and runs
-# `iters` fixed steps of size `step` (iters*step = 1 -> approx posterior for the finite-time IEKF). Returns the final ensemble, k_R_prior x n_samples, playing the role of run_tmcmc's output.
-function run_iekf(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::AbstractRNG; step::Real = 0.1, iters::Int = 10)
+# `iters` fixed steps of size `step` (iters*step = T; T = 1 was the finite-time IEKF approximate posterior, the config now runs 30 steps of 0.1, T = 3). Returns the final ensemble, k_R_prior x n_samples, playing the role of run_tmcmc's output.
+function run_iekf(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::AbstractRNG; step::Real = 0.1, iters::Int = 10, diag::Union{Nothing, AbstractDict} = nothing)
     k_in, k_out = prob.prior_basis.k_R, prob.output_basis.k_R
     prior = ParameterDistribution(Parameterized(MvNormal(zeros(k_in), Matrix(1.0I, k_in, k_in))), fill(no_constraint(), k_in), "z_whitened")
     ekp = EKP.EnsembleKalmanProcess(
@@ -565,24 +579,36 @@ function run_iekf(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::Abstract
         rng = copy(rng), scheduler = EKP.DefaultScheduler(step), verbose = false,
     )
     t0 = time()
+    misfit_traj, spread_traj = Float64[], Float64[]   # diagnostics only (read-only on U, G)
     for _ in 1:iters
         U = Matrix{Float64}(EKP.get_u_final(ekp))
         G = zeros(k_out, n_samples)
         Threads.@threads :dynamic for j in 1:k_out
             G[j, :] = GaussianProcesses.predict_f(gps.gps[j], U)[1]
         end
+        if diag !== nothing
+            push!(misfit_traj, 0.5 * mean(sum(abs2, prob.y_whitened .- G; dims = 1)))
+            push!(spread_traj, sqrt(mean(var(U; dims = 2))))
+        end
         EKP.update_ensemble!(ekp, G)
     end
     @info "run_iekf: done" iters elapsed_s = round(time() - t0; digits = 2)
+    if diag !== nothing && !isempty(misfit_traj)
+        diag["iekf_misfit_first"] = misfit_traj[1]
+        diag["iekf_misfit_last"] = misfit_traj[end]
+        diag["iekf_misfit_flat"] = length(misfit_traj) > 1 ? abs(misfit_traj[end] - misfit_traj[end - 1]) / max(misfit_traj[end - 1], eps()) : NaN
+        diag["iekf_spread_ratio"] = spread_traj[end] / max(spread_traj[1], eps())
+        diag["iekf_secs"] = time() - t0
+    end
     return Matrix{Float64}(EKP.get_u_final(ekp))
 end
 
 # The variant's posterior sampler, k_R_prior x n_samples (prior-whitened coords).
-function sample_posterior(variant::Symbol, prob::BOEDProblem, gps::BOEDGPs, rng::AbstractRNG, cfg)
+function sample_posterior(variant::Symbol, prob::BOEDProblem, gps::BOEDGPs, rng::AbstractRNG, cfg; diag::Union{Nothing, AbstractDict} = nothing)
     if variant in (:iekf, :iekf_eig)
-        return run_iekf(prob, gps, cfg.n_posterior_samples, rng; step = cfg.iekf_step, iters = cfg.iekf_iters)
+        return run_iekf(prob, gps, cfg.n_posterior_samples, rng; step = cfg.iekf_step, iters = cfg.iekf_iters, diag = diag)
     elseif variant in (:tmcmc, :tmcmc_eig)
-        return run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin)
+        return run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin, diag = diag)
     else
         error("Unknown GBOED variant: $variant (expected :tmcmc_eig, :tmcmc, :iekf_eig or :iekf)")
     end
@@ -590,18 +616,20 @@ end
 
 # Proposes the next batch (k_R_prior x N_ens, prior-whitened coords) per `variant`.
 function acquire_batch(
-    variant::Symbol, prob::BOEDProblem, gps::BOEDGPs, X_post::AbstractMatrix, N_ens::Int, cfg, rng::AbstractRNG, label::AbstractString,
+    variant::Symbol, prob::BOEDProblem, gps::BOEDGPs, X_post::AbstractMatrix, N_ens::Int, cfg, rng::AbstractRNG, label::AbstractString;
+    diag::Union{Nothing, AbstractDict} = nothing,
 )
     k_R_prior = prob.prior_basis.k_R
     if variant in (:tmcmc_eig, :iekf_eig)
         hyperparams = extract_hyperparams(gps)
         X_eig = subsample_columns(X_post, cfg.n_eig_posterior_samples, rng)   # EIG cost ~n^3 per mode; candidates still initialised from all of X_post
         X_cand0 = init_candidate_batch(X_post, N_ens, rng; strategy = cfg.batch_init_strategy)
+        diag !== nothing && (diag["X_cand0"] = copy(X_cand0))
         return timed_stage(
             () -> optimize_batch(
                 X_cand0, X_eig, hyperparams, k_R_prior, N_ens;
                 bound_std = cfg.eig_bounds_std, region = cfg.eig_region, ball_quantile = cfg.eig_ball_quantile, iters = cfg.eig_optim_iters, outer_iters = cfg.eig_outer_iters,
-                jitter = cfg.eig_jitter, g_tol = cfg.eig_g_tol, f_reltol = cfg.eig_f_reltol, call_limit = cfg.eig_call_limit,
+                jitter = cfg.eig_jitter, g_tol = cfg.eig_g_tol, f_reltol = cfg.eig_f_reltol, call_limit = cfg.eig_call_limit, diag = diag,
             ),
             "optimize_batch ($label)",
         )

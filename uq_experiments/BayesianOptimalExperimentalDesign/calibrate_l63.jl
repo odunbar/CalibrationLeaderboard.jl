@@ -61,6 +61,11 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
     )
     k_R_prior = prob.prior_basis.k_R
 
+    # Diagnostics (diagnostics/boed_diagnostics.jl): no RNG draws, no extra forward evaluations; DIAG=0 turns them off.
+    rec = boed_new_recorder(cfg)
+    diag_store = BOEDDiagStore()
+    z_true = vec(to_prior_whitened(prob, reshape(boed_truth_theta_l63(), :, 1)))   # truth projected into the truncated whitened input space
+
     # NOTE: the batch accumulator here must NOT be named `results` — `results`
     # is also assigned in this function's outer scope (the cumulative dataset
     # below), and Julia closures share (rather than shadow) an enclosing
@@ -89,10 +94,12 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
     # Fit the first GP
     gps = timed_stage(() -> fit_boed_gps(prob, Z, results; gp_fit_kwargs(cfg)...), "fit_boed_gps (iter 1, rng_idx=$rng_idx)")
     # Use ST-MCMC (sequential parallel sampler for the posterior
+    sdiag = Dict{String, Any}()
     X_post = timed_stage(
-        () -> sample_posterior(cfg.variant, prob, gps, rng, cfg),
+        () -> sample_posterior(cfg.variant, prob, gps, rng, cfg; diag = rec.enabled ? sdiag : nothing),
         "sample_posterior (iter 1, rng_idx=$rng_idx)",
     )
+    boed_record_iteration!(rec, diag_store, 1, prob, gps, Z, X_post, z_true, sdiag, boed_acq_nan(), nothing, Dict{String, Any}())
 
     posteriors_by_k = Dict{Int, Matrix{Float64}}(1 => from_prior_whitened(prob, X_post))
     n_iters_completed = 1
@@ -100,13 +107,16 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
     save_wave() = save_wave_results(
         results_fn, posteriors_by_k, n_iters_completed, cfg.max_iters;
         variant = String(cfg.variant), y = y, R = R, x0 = x0, ic_cov_sqrt = ic_cov_sqrt, lorenz_cfg = lorenz_cfg, obs_cfg = obs_cfg,
+        diagnostics = boed_diagnostics_dict(rec, diag_store, prob, Z, results, z_true, cfg),
     )
     save_wave()
     @info "GBOED iteration 1/$(cfg.max_iters) done (N_ens=$N_ens, rng_idx=$rng_idx)"
 
     # Calibration loop: each adds one acquisition batch (EIG-optimized, posterior-drawn, per cfg.variant),
     for k in 2:cfg.max_iters
-        X_cand = acquire_batch(cfg.variant, prob, gps, X_post, N_ens, cfg, rng, "iter $k, rng_idx=$rng_idx")
+        raw = Dict{String, Any}()
+        X_cand = acquire_batch(cfg.variant, prob, gps, X_post, N_ens, cfg, rng, "iter $k, rng_idx=$rng_idx"; diag = rec.enabled ? raw : nothing)
+        acq = rec.enabled ? boed_acq_diag(prob, gps, X_post, Z, X_cand, raw, cfg) : nothing   # judged against the k-1 gps/X_post/Z, before they are updated below
         theta_cand = from_prior_whitened(prob, X_cand)
         results_cand = timed_stage(() -> forward_eval_batch(theta_cand), "forward_eval_batch (iter $k, N_ens=$N_ens, rng_idx=$rng_idx)")
 
@@ -116,10 +126,12 @@ function boed_one(cfg, N_ens, rng_idx, output_dir)
         gps = timed_stage(() -> fit_boed_gps(prob, Z, results; prev = gps, gp_fit_kwargs(cfg)...), "fit_boed_gps (iter $k, rng_idx=$rng_idx)")
 
         # re-samples the ST-MCMC posterior, for the next iteration
+        sdiag = Dict{String, Any}()
         X_post = timed_stage(
-            () -> sample_posterior(cfg.variant, prob, gps, rng, cfg),
+            () -> sample_posterior(cfg.variant, prob, gps, rng, cfg; diag = rec.enabled ? sdiag : nothing),
             "sample_posterior (iter $k, rng_idx=$rng_idx)",
         )
+        boed_record_iteration!(rec, diag_store, k, prob, gps, Z, X_post, z_true, sdiag, acq, X_cand, raw)
         posteriors_by_k[k] = from_prior_whitened(prob, X_post)
         n_iters_completed = k
         save_wave()
