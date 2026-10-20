@@ -14,6 +14,7 @@ function build_l96_problem(case::String, output_dir::String)
         prior_mean = [log(10.0)]
         prior_cov  = diagm([0.4^2])
         make_forcing = F -> build_forcing(phi, exp(F[1]), nothing, nothing)
+        theta_true   = [log(8.0)]
 
     elseif case == "vec-force"
         nx = 40
@@ -26,6 +27,7 @@ function build_l96_problem(case::String, output_dir::String)
         prior_mean = 8.0 * ones(nx)
         prior_cov  = [psig^2 * exp(-abs(i - j) / pl) for i in 1:nx, j in 1:nx]
         make_forcing = F -> build_forcing(phi, F, nothing, nothing)
+        theta_true   = Vector{Float64}(sinusoid)
 
     elseif case == "flux-force"
         nx = 100
@@ -44,6 +46,7 @@ function build_l96_problem(case::String, output_dir::String)
         prior_cov     = Matrix((0.1^2) * I(length(prior_mean)))
         nu            = length(prior_mean)
         make_forcing  = F -> build_forcing(phi, F, phi_structure, sample_range)
+        theta_true    = nothing    # NN weights are non-identifiable
 
     else
         throw(ArgumentError("Unknown L96 case: $case"))
@@ -58,5 +61,5 @@ function build_l96_problem(case::String, output_dir::String)
               ic_cov_sqrt = ld.ic_cov_sqrt,
               lorenz_cfg  = ld.lorenz_config_settings,
               obs_cfg     = ld.observation_config,
-              nx, ny = 2 * nx, nu, prior_mean, prior_cov, make_forcing, case)
+              nx, ny = 2 * nx, nu, prior_mean, prior_cov, make_forcing, case, theta_true)
 end

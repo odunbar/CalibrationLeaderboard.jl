@@ -7,6 +7,8 @@
 #   conv_score = forward-evaluation-equivalents simulated when RMSE_k < rmse_target
 #   (see experiment_config.jl); NaN if not reached within cfg.max_evals.
 
+include(joinpath(@__DIR__, "diagnostics", "rl_diagnostics.jl"))
+
 function run_one(cfg, rmse_target, rng_idx, prob)
     (; nx, ny, nu, prior_mean, prior_cov) = prob
     rng     = MersenneTwister(rng_idx)
@@ -28,6 +30,13 @@ function run_one(cfg, rmse_target, rng_idx, prob)
     last_loss    = NaN
     warmed       = false
 
+    # diagnostics (additive; DIAG=0 disables).  The record schedule is indexed by RL step, bounded by budget / cheapest step.
+    step_cost_min = cfg.update_frequency === :long ? 1.0 : stride_steps(prob, cfg) * prob.lorenz_cfg.dt / prob.lorenz_cfg.T
+    θn_true = (hasproperty(prob, :theta_true) && prob.theta_true !== nothing) ?
+              agent.F_L \ (Vector{Float64}(prob.theta_true) .- agent.F_mean) : nothing
+    dg  = RLDiag(ceil(Int, cfg.max_evals / step_cost_min) + 2, agent.θn, θn_true, cfg.explore_frac)
+    upd = Dict{Symbol, Any}()
+
     while cost < cfg.max_evals
         step += 1
         frac = step <= cfg.n_warmup ? cfg.warmup_frac : cfg.explore_frac
@@ -48,6 +57,7 @@ function run_one(cfg, rmse_target, rng_idx, prob)
             conv_score   = cost
             final_params = F
             final_output = out.G
+            finalize!(dg.rec, step; rmse = RMSE, cost, policy_disp = norm(agent.θn - dg.θn0))
             break
         end
 
@@ -57,17 +67,20 @@ function run_one(cfg, rmse_target, rng_idx, prob)
                 warmed = true
             end
             for _ in 1:cfg.updates_per_step
-                last_loss, _ = ddpg_update!(agent, buf, rng_net)
+                last_loss, _ = ddpg_update!(agent, buf, rng_net; diag = dg.rec.enabled ? upd : nothing)
                 n_updates += 1
             end
         end
+        rl_diag_step!(dg, agent, buf, (step >= cfg.n_warmup && buf.n >= cfg.batch_size) ? upd : nothing, step, RMSE, cost)
     end
+    finalize!(dg.rec, step; cost)
 
     policy_params = policy_action(agent)
     @info "rmse_target=$(rmse_target) rng_idx=$(rng_idx) algorithm=$(cfg.algorithm) update_frequency=$(cfg.update_frequency) conv=$(conv_score) " *
           "steps=$(step) updates=$(n_updates) critic_loss=$(round(last_loss; sigdigits = 3)) " *
           "‖Δθ‖/‖θ₀‖=$(round(norm(policy_params - θ0) / norm(θ0); sigdigits = 4))"
-    return (; conv_score, final_params, final_output, policy_params, n_steps = step, n_updates)
+    return (; conv_score, final_params, final_output, policy_params, n_steps = step, n_updates,
+            diagnostics = diagnostics_dict(dg.rec))
 end
 
 ########################################################################
@@ -100,6 +113,7 @@ function rl_main(experiment::Symbol, build_problem)
             "policy_params", result.policy_params,
             "n_steps",       result.n_steps,
             "n_updates",     result.n_updates,
+            "diagnostics",   result.diagnostics,
             "rmse_target",   rmse_target,
             "rng_idx",       rng_idx,
             "algorithm",              String(cfg.algorithm),

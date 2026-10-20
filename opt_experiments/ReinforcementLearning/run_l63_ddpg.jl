@@ -40,7 +40,8 @@ function build_l63_problem(cfg, output_dir)
               obs_cfg     = ld.observation_config,
               nx = 3, ny = length(ld.y), nu = 2,
               prior_mean = [3.3, 1.2], prior_cov = diagm([0.15^2, 0.5^2]),
-              make_forcing = F -> EnsembleMemberConfig(exp.(F)))
+              make_forcing = F -> EnsembleMemberConfig(exp.(F)),
+              theta_true = log.([28.0, 8.0 / 3.0]))
 end
 
 # ╔══════════════════════════════════════════════════════════════════════════╗

@@ -58,11 +58,21 @@ end
 ###############  Agent  ###############################################
 ########################################################################
 
-function build_critic(nin::Int, hidden::Int, rng::AbstractRNG)
+# Hidden activation of the critic (cfg.critic_act; :relu is the leaderboard setting, the others are experiments).
+critic_activation(name::Symbol) =
+    name === :relu     ? relu :
+    name === :softplus ? softplus :
+    name === :elu      ? elu :
+    name === :gelu     ? gelu :
+    name === :swish    ? swish :
+    name === :tanh     ? tanh :
+    throw(ArgumentError("Unknown critic activation: $name (relu, softplus, elu, gelu, swish, tanh)"))
+
+function build_critic(nin::Int, hidden::Int, rng::AbstractRNG, act = relu)
     init = (dims...) -> Flux.glorot_uniform(rng, dims...)
     return Chain(
-        Dense(nin   => hidden, relu; init),
-        Dense(hidden => hidden, relu; init),
+        Dense(nin   => hidden, act; init),
+        Dense(hidden => hidden, act; init),
         Dense(hidden => 1; init),
     )
 end
@@ -87,6 +97,7 @@ mutable struct DDPGAgent
     target_noise_clip::Float64
     batch_size::Int
     n_updates::Int
+    renorm_every::Int                    # 0 = scalings frozen at the first update (default); k > 0 = re-estimate every k updates
 end
 
 function DDPGAgent(cfg, θ0_raw::Vector{Float64}, prior_mean, prior_cov, nx::Int, rng::AbstractRNG)
@@ -95,7 +106,7 @@ function DDPGAgent(cfg, θ0_raw::Vector{Float64}, prior_mean, prior_cov, nx::Int
     θn  = L \ (θ0_raw .- prior_mean)
     actor_state = Optimisers.setup(
         Optimisers.Adam(cfg.actor_lr, (cfg.adam_beta1, cfg.adam_beta2), cfg.adam_eps), θn)
-    critics = Any[build_critic(nx + nu, cfg.hidden, rng) for _ in 1:cfg.n_critics]
+    critics = Any[build_critic(nx + nu, cfg.hidden, rng, critic_activation(cfg.critic_act)) for _ in 1:cfg.n_critics]
     targets = Any[deepcopy(c) for c in critics]
     cstates = Any[Flux.setup(Flux.Adam(cfg.critic_lr), c) for c in critics]
     return DDPGAgent(
@@ -103,7 +114,7 @@ function DDPGAgent(cfg, θ0_raw::Vector{Float64}, prior_mean, prior_cov, nx::Int
         Vector{Float64}(prior_mean), L,
         zeros(nx), ones(nx), 1.0,
         cfg.gamma, cfg.polyak, cfg.policy_delay, cfg.target_noise, cfg.target_noise_clip,
-        cfg.batch_size, 0,
+        cfg.batch_size, 0, cfg.renorm_every,
     )
 end
 
@@ -116,6 +127,32 @@ function init_normalization!(a::DDPGAgent, b::ReplayBuffer)
     a.x_mean  = vec(mean(xs, dims = 2))
     a.x_std   = max.(vec(std(xs, dims = 2)), 1e-3)
     a.φ_scale = max(median(b.Φ[1:b.n]), 1e-8)
+    return a
+end
+
+# Re-estimate the input/target scalings from the current buffer WITHOUT changing the function the critics compute:
+# the first-layer state columns/bias and the output layer of every critic and target critic are rescaled so that
+# the output in real units (φ_scale · net output) is unchanged.  Used only when cfg.renorm_every > 0.
+#   inputs  z = (x − m)/s  →  z′ = (x − m′)/s′ :   W[:, state] ← W[:, state]·diag(s′/s),  b ← b + W_old[:, state]·((m′ − m)/s)
+#   outputs q_n = q/φ      →  q_n′ = q/φ′      :   W_out ← W_out·(φ/φ′),  b_out ← b_out·(φ/φ′)
+# No RNG, no forward model.
+function renormalize!(a::DDPGAgent, b::ReplayBuffer)
+    nx   = length(a.x_mean)
+    xs   = b.x[:, 1:b.n]
+    m′   = vec(mean(xs, dims = 2))
+    s′   = max.(vec(std(xs, dims = 2)), 1e-3)
+    φ′   = max(median(b.Φ[1:b.n]), 1e-8)
+    shiftv = Float32.((m′ .- a.x_mean) ./ a.x_std)
+    ratio  = Float32.(s′ ./ a.x_std)
+    ρ      = Float32(a.φ_scale / φ′)
+    for net in vcat(a.critics, a.targets)
+        l1 = net.layers[1]; lo = net.layers[end]
+        l1.bias .+= l1.weight[:, 1:nx] * shiftv          # uses the OLD weights
+        l1.weight[:, 1:nx] .*= reshape(ratio, 1, :)
+        lo.weight .*= ρ
+        lo.bias   .*= ρ
+    end
+    a.x_mean, a.x_std, a.φ_scale = m′, s′, φ′
     return a
 end
 
@@ -140,7 +177,10 @@ end
 # One critic update on a minibatch, then (every policy_delay calls) an actor
 # update ascending the critic and a Polyak update of the target critics.
 # Returns (critic_loss, actor_updated::Bool).
-function ddpg_update!(a::DDPGAgent, b::ReplayBuffer, rng::AbstractRNG)
+# `diag` (default nothing): a Dict the caller passes to read back update internals for diagnostics
+# (diagnostics/rl_diagnostics.jl); it is only written to, never read, and does not change the update.
+function ddpg_update!(a::DDPGAgent, b::ReplayBuffer, rng::AbstractRNG; diag::Union{Nothing, Dict{Symbol, Any}} = nothing)
+    a.renorm_every > 0 && a.n_updates > 0 && a.n_updates % a.renorm_every == 0 && renormalize!(a, b)
     B   = a.batch_size
     idx = rand(rng, 1:b.n, B)
     X   = norm_x(a, b.x[:, idx])
@@ -170,13 +210,27 @@ function ddpg_update!(a::DDPGAgent, b::ReplayBuffer, rng::AbstractRNG)
     end
     a.n_updates += 1
 
+    if diag !== nothing
+        empty!(diag)
+        diag[:loss]    = Float64(loss) / length(a.critics)
+        diag[:zt_var]  = Float64(var(zt))
+        diag[:zt_std]  = Float64(std(zt))
+        diag[:batch]   = (X, Fb, θ32)        # references to the existing minibatch arrays (not copied)
+    end
+
     actor_updated = false
     if a.n_updates % a.policy_delay == 0
         # --- actor: ascend q_1(x, θ) averaged over buffer states ---
         c1 = a.critics[1]
         g  = Flux.gradient(θ -> -mean(vec(c1(vcat(X, repeat(θ, 1, B))))), θ32)[1]
+        θ_pre = diag === nothing ? nothing : copy(a.θn)
         if g !== nothing && all(isfinite, g)
             a.actor_state, a.θn = Optimisers.update!(a.actor_state, a.θn, Float64.(g))
+        end
+        if diag !== nothing
+            diag[:g]      = g === nothing ? nothing : Float32.(g)
+            diag[:θ_pre]  = θ_pre
+            diag[:θ_post] = copy(a.θn)
         end
         # --- target critics ---
         for i in eachindex(a.targets)

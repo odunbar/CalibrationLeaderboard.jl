@@ -55,12 +55,14 @@ function experiment_config(case::Symbol, update_frequency::Symbol, algorithm::Sy
         target_noise      = 0.0,     # TD3 target smoothing noise (prior-std units)
         target_noise_clip = 0.5,
         # --- optimisation ---
-        critic_lr         = 1e-3,
+        critic_lr         = parse(Float64, get(ENV, "CRITIC_LR", "1e-3")),   # CRITIC_LR env var: experiments only; default is the leaderboard value
         actor_lr          = 0.02,    # Adam step on θn (prior-std units)
         adam_beta1        = 0.9,
         adam_beta2        = 0.999,
         adam_eps          = 1e-8,
         batch_size        = 64,
+        critic_act        = Symbol(get(ENV, "CRITIC_ACT", "relu")),   # CRITIC_ACT env var: experiments only (relu|softplus|elu|gelu|swish|tanh); relu = leaderboard value
+        renorm_every      = parse(Int, get(ENV, "RENORM_EVERY", "0")),   # RENORM_EVERY env var: experiments only; 0 = scalings frozen at the first update (leaderboard value)
         updates_per_step  = 1,
         # --- exploration (Gaussian noise on the applied action, prior-std units) ---
         explore_frac      = 0.1,
