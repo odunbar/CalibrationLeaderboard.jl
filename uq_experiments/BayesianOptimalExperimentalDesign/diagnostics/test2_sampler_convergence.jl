@@ -17,7 +17,8 @@
 #
 # Local (from the method directory):
 #   EXPERIMENT=l63 BOED_VARIANT=tmcmc_eig CALIBRATE_DATE=2099-01-01 DIAG_N_ENS=10 julia --project=. -t 8 diagnostics/test2_sampler_convergence.jl
-# Knobs: DIAG_ITERS=1,5,10 (iterations to test, default first/middle/last), DIAG_REPEATS=3, DIAG_NPART=<particles> (default cfg.n_posterior_samples).
+# Knobs: DIAG_ITERS=1,5,10 (iterations to test, default first/middle/last), DIAG_REPEATS=3, DIAG_NPART=<particles> (default cfg.n_posterior_samples),
+#        DIAG_TMCMC=package|threaded|batched (ST-MCMC implementation, default batched; see offline_tmcmc.jl: same algorithm, ~20x faster on l96_vec/flux than the package).
 # Output: diagnostics/output/test2_<variant key>_<case>_N<N>_seed<s>_<date>.jld2 and .png
 
 using Plots
@@ -31,20 +32,11 @@ k_in = prob.prior_basis.k_R
 ITERS = haskey(ENV, "DIAG_ITERS") ? parse.(Int, split(ENV["DIAG_ITERS"], ",")) : unique([1, cld(K, 2), K])
 REPEATS = parse(Int, get(ENV, "DIAG_REPEATS", "3"))
 NPART = parse(Int, get(ENV, "DIAG_NPART", string(cfg.n_posterior_samples)))
-println("test2: $(method_key) $(OFFLINE_CASE) N_ens=$(S.N_ens) seed=$(S.seed); iterations $ITERS; $REPEATS repeats × $NPART particles; k_in=$k_in")
+println("test2: $(method_key) $(OFFLINE_CASE) N_ens=$(S.N_ens) seed=$(S.seed); iterations $ITERS; $REPEATS repeats × $NPART particles; k_in=$k_in; ST-MCMC implementation: $TMCMC_IMPL ($(Threads.nthreads()) threads)")
 
-# ST-MCMC without the GP predictive variance in the likelihood (identical structure to run_tmcmc / boed_loglik otherwise).
-function run_tmcmc_novar(prob, gps, n, rng; burnin, thin)
-    k = prob.prior_basis.k_R
-    function ll(z)
-        mu = predict_boed(gps, z isa Real ? [z] : z)[1]
-        return sum(-0.5 .* (mu .- prob.y_whitened) .^ 2 .- 0.5 * log(2π))
-    end
-    logprior(z) = sum(logpdf.(Normal(), z))
-    priorRnd(n) = Matrix(lhs_standard_normal_sample(k, n, rng)')
-    samps, _ = TransitionalMCMC.tmcmc(ll, logprior, priorRnd, n, burnin, thin)
-    return Matrix(reshape(samps, n, k)')
-end
+# All ST-MCMC runs go through offline_tmcmc (offline_tmcmc.jl): DIAG_TMCMC = package | threaded | batched (default batched). `tmcmc_novar` is the same
+# sampler without the GP predictive variance in the likelihood.
+run_tmcmc_novar(prob, gps, n, rng; burnin, thin) = offline_tmcmc(prob, gps, n, rng; burnin = burnin, thin = thin, with_var = false)
 
 spreadof(X) = sqrt(mean(var(X; dims = 2)))
 iekf_runs = [("iekf_prod", cfg.iekf_iters, cfg.iekf_step), ("iekf_T1_10x0.1", 10, 0.1), ("iekf_T1_40x0.025", 40, 0.025), ("iekf_T3fine_120x0.025", 120, 0.025)]
@@ -65,7 +57,7 @@ for (ik, k) in enumerate(ITERS)
             Random.seed!(10_000 * k + 100 * r + (name == "tmcmc_long" ? 1 : 2))   # ST-MCMC's MH moves use the global RNG
             dg = Dict{String, Any}()
             t0 = time()
-            push!(store, run_tmcmc(prob, gps, NPART, MersenneTwister(1000 * k + r + (name == "tmcmc_long" ? 0 : 500)); burnin = burn, thin = thin, diag = dg))
+            push!(store, offline_tmcmc(prob, gps, NPART, MersenneTwister(1000 * k + r + (name == "tmcmc_long" ? 0 : 500)); burnin = burn, thin = thin, diag = dg))
             secs[name][ik] = (isnan(secs[name][ik]) ? 0.0 : secs[name][ik]) + (time() - t0) / REPEATS
             logev[name][r, ik] = dg["tmcmc_log_ev"]
         end
@@ -103,7 +95,7 @@ end
 
 tag = "$(method_key)_$(case_stem(OFFLINE_CASE))_N$(S.N_ens)_seed$(S.seed)_$(cfg.calibrate_date)"
 JLD2.save(joinpath(OFFLINE_OUT, "test2_$(tag).jld2"), "results", res, "samplers", sampler_names, "iters", ITERS, "floor_energy", floor_energy, "logev", logev, "secs", secs,
-          "npart", NPART, "repeats", REPEATS, "N_ens", S.N_ens, "seed", S.seed, "variant", String(cfg.variant), "case", String(OFFLINE_CASE))
+          "npart", NPART, "repeats", REPEATS, "tmcmc_impl", String(TMCMC_IMPL), "N_ens", S.N_ens, "seed", S.seed, "variant", String(cfg.variant), "case", String(OFFLINE_CASE))
 cols = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#8a63d2"]
 panels = []
 for (m, ttl, ysc, ref) in (("energy", "energy distance to reference (dotted: MC floor)", :log10, nothing), ("dmean", "mean shift / reference spread", :log10, nothing), ("sratio", "spread / reference spread", :identity, 1.0))

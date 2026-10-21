@@ -26,6 +26,7 @@ include(joinpath(_COMMON, "diagnostics", "diag_files.jl"))   # file-name grammar
 using .DiagFiles
 include(joinpath(BOED_DIR, "experiment_config.jl"))
 include(joinpath(BOED_DIR, "boed_core.jl"))
+include(joinpath(@__DIR__, "offline_tmcmc.jl"))   # threaded / lock-step batched ST-MCMC for test2 (DIAG_TMCMC)
 
 const OFFLINE_OUT = joinpath(@__DIR__, "output")
 mkpath(OFFLINE_OUT)

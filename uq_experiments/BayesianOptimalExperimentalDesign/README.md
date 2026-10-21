@@ -67,9 +67,12 @@ forward model — so it also uses this file's new `unwhiten_vector`/
    EIG(X_cand) = 0.5·log(det(K_{X',X'}) / det(Σ'))
    Σ' = K_{X',X'} − K_{X',X_cand}·K_{X_cand,X_cand}⁻¹·K_{X_cand,X'}
    ```
-   where `X'` is the ST-MCMC posterior draw, `K` is the (fixed,
-   currently-fitted) Matérn-7/2 kernel, via `Optim.jl`'s `Fminbox(LBFGS())` +
-   `ForwardDiff` autodiff.
+   where `X'` is a subsample of the posterior draw (ST-MCMC or IEKF, per
+   variant) and `K` is the (fixed, currently-fitted) SE-ARD kernel of each
+   output mode (the objective is averaged over modes). The batch is optimized
+   with `Optim.jl`'s LBFGS and `Zygote` reverse-mode gradients, inside a
+   χ² ball (`eig_region = :ball`, via a radial squash) or a `Fminbox` box
+   (`:box`).
 4. Forward-evaluate the optimized batch; augment the cumulative dataset;
    refit the GP; repeat from step 2.
 5. Continues for `max_iters` iterations (`experiment_config.jl`).

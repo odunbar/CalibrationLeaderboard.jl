@@ -43,6 +43,8 @@ Storage: roughly 0.5 MB per vec/flux cell (a cell's posteriors alone are 2.5–4
 | `combine_diagnostics.jl` | all seeds × N_ens of one (variant, case) → `output/diagnostics_<variant key>_<case>_<date>.jld2` (layout: `common/diagnostics/combine_core.jl`) |
 | `experiment_diagnosis_visualization.jl` | one nine-panel figure per (variant, case): `output/diagnosis_<…>.{png,pdf}` |
 | `offline_common.jl` | cell loader, GP rebuild, true-forward evaluation for tests 1–2 |
+| `offline_tmcmc.jl` | threaded and lock-step batched ST-MCMC for test2 (`DIAG_TMCMC=package\|threaded\|batched`, default `batched`); offline only, the run's `run_tmcmc` is unchanged |
+| `validate_offline_tmcmc.jl` | checks `threaded` / `batched` against `TransitionalMCMC.tmcmc` on a frozen GP (log-evidence, energy distance vs the MC floor, timings) |
 | `compare_common.jl` | combined-file loader for tests 3–4 |
 | `test1_…jl` … `test4_…jl` | the four tests |
 
@@ -59,6 +61,10 @@ BOED_VARIANT=iekf_eig EXPERIMENT=l96_vec CALIBRATE_DATE=2026-10-20 julia --proje
 # 3. tests 1-2 (one cell; take it from the same output directory)
 BOED_VARIANT=tmcmc_eig EXPERIMENT=l96_vec CALIBRATE_DATE=2026-10-20 DIAG_N_ENS=50 julia --project=. -t 8 diagnostics/test1_emulator_quality.jl
 BOED_VARIANT=tmcmc_eig EXPERIMENT=l96_vec CALIBRATE_DATE=2026-10-20 DIAG_N_ENS=50 julia --project=. -t 8 diagnostics/test2_sampler_convergence.jl
+
+# 3b. test2 uses the lock-step batched ST-MCMC by default (same algorithm as TransitionalMCMC.tmcmc, far faster on l96_vec/flux; see offline_tmcmc.jl).
+#     DIAG_TMCMC=package reproduces the old serial behaviour; validate_offline_tmcmc.jl compares the three implementations on one cell.
+BOED_VARIANT=iekf EXPERIMENT=l96_vec CALIBRATE_DATE=2026-10-20 DIAG_N_ENS=50 julia --project=. -t 16 diagnostics/validate_offline_tmcmc.jl
 
 # 4. tests 3-4 (need the combined files of several variants; DIAG_VARIANTS restricts; CALIBRATE_DATE pins the date)
 EXPERIMENT=l96_vec julia --project=. diagnostics/test3_eig_placement.jl
