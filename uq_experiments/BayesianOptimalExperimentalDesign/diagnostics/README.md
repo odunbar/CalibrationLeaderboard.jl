@@ -47,6 +47,7 @@ Storage: roughly 0.5 MB per vec/flux cell (a cell's posteriors alone are 2.5–4
 | `validate_offline_tmcmc.jl` | checks `threaded` / `batched` against `TransitionalMCMC.tmcmc` on a frozen GP (log-evidence, energy distance vs the MC floor, timings) |
 | `compare_common.jl` | combined-file loader for tests 3–4 |
 | `test1_…jl` … `test4_…jl` | the four tests |
+| `test5_eig_optimiser_gain.jl` | within-stage EIG gain of the optimiser (`eig_batch − eig_init`, same fixed subsample), split by hit-call-limit; from the combined files of the EIG variants |
 
 ## Commands (from `BayesianOptimalExperimentalDesign/`)
 
@@ -69,6 +70,9 @@ BOED_VARIANT=iekf EXPERIMENT=l96_vec CALIBRATE_DATE=2026-10-20 DIAG_N_ENS=50 jul
 # 4. tests 3-4 (need the combined files of several variants; DIAG_VARIANTS restricts; CALIBRATE_DATE pins the date)
 EXPERIMENT=l96_vec julia --project=. diagnostics/test3_eig_placement.jl
 EXPERIMENT=l96_vec julia --project=. diagnostics/test4_eig_helpfulness.jl
+
+# 5. does the EIG optimiser improve the batch within each stage? (EIG variants only; same env options as test3)
+EXPERIMENT=l96_vec julia --project=. diagnostics/test5_eig_optimiser_gain.jl
 ```
 
 For HPC, add the combine job after the leaderboard job (slurm-pipeline-handler) and copy `diagnostics/output/diagnostics_*.jld2` back with the nc; the offline tests need the cell files themselves (`output/<variant key>_<date>/`), which for flux are large.

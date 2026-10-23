@@ -71,14 +71,14 @@ function tmcmc_threaded(log_fD_T::Function, log_fT::Function, sample_fT::Functio
 end
 
 # Lock-step ST-MCMC. ll_cols(X) -> M log-likelihoods for the columns of the k x M matrix X; logprior_cols likewise. `sample_fT(n)` returns n x k.
-# returns (θ n x k, log evidence, number of tempering stages)
+# returns (θ n x k, log evidence, number of tempering stages, mean Metropolis acceptance rate)
 function tmcmc_batched(ll_cols::Function, logprior_cols::Function, sample_fT::Function, Nsamples::Integer, burnin::Integer, rng::AbstractRNG; beta2::Float64 = 0.01)
     θ = sample_fT(Nsamples)                  # n x k
     k = size(θ, 2)
     X = Matrix(θ')                           # k x n
     Lp = ll_cols(X)
     βj, Log_ev = 0.0, 0.0
-    stages, t0 = 0, time()
+    stages, t0, n_acc, n_prop = 0, time(), 0, 0
     while βj < 1
         stages += 1
         Lp_adjust = maximum(Lp)
@@ -96,12 +96,13 @@ function tmcmc_batched(ll_cols::Function, logprior_cols::Function, sample_fT::Fu
             acc = min.(0.0, Tq .- Tc) .>= log.(rand(rng, Nsamples))
             Xc[:, acc] = P[:, acc]
             Tc[acc] = Tq[acc]
+            n_acc += count(acc); n_prop += Nsamples
             Lc[acc] = Lq[acc]
         end
         X, Lp, βj = Xc, Lc, βj1
         TMCMC_VERBOSE && @info "tmcmc_batched: stage $stages β=$(round(βj; sigdigits = 4)) elapsed_s=$(round(time() - t0; digits = 1))"
     end
-    return Matrix(X'), Log_ev, stages
+    return Matrix(X'), Log_ev, stages, n_acc / max(n_prop, 1)
 end
 
 """
@@ -110,25 +111,25 @@ end
 Posterior sample from the GP surrogate by ST-MCMC with the chosen implementation. `with_var = false` drops the GP predictive variance from the likelihood
 (test2's `tmcmc_novar`). Fills `diag["tmcmc_log_ev"]`.
 """
-function offline_tmcmc(prob::BOEDProblem, gps::BOEDGPs, n::Int, rng::AbstractRNG; burnin::Int, thin::Int, impl::Symbol = TMCMC_IMPL, with_var::Bool = true,
+function offline_tmcmc(prob::BOEDProblem, gps::BOEDGPs, n::Int, rng::AbstractRNG; burnin::Int, thin::Int, beta2::Float64 = 0.01, impl::Symbol = TMCMC_IMPL, with_var::Bool = true,
                        diag::Union{Nothing, AbstractDict} = nothing)
     k = prob.prior_basis.k_R
     logprior(z) = sum(logpdf.(Normal(), z))
     priorRnd(m) = Matrix(lhs_standard_normal_sample(k, m, rng)')
     if impl === :package || k == 1   # k == 1 takes the package's scalar code path
-        if with_var
+        if with_var && beta2 == 0.01
             return run_tmcmc(prob, gps, n, rng; burnin = burnin, thin = thin, diag = diag)
         end
         ll = z -> (mu = predict_boed(gps, z isa Real ? [z] : z)[1]; sum(-0.5 .* (mu .- prob.y_whitened) .^ 2 .- 0.5 * log(2π)))
-        samps, lev = TransitionalMCMC.tmcmc(ll, logprior, priorRnd, n, burnin, thin)
+        samps, lev = TransitionalMCMC.tmcmc(ll, logprior, priorRnd, n, burnin, thin, beta2)
     elseif impl === :threaded
         ll = z -> with_var ? boed_loglik(prob, gps, z) : (mu = predict_boed(gps, z)[1]; sum(-0.5 .* (mu .- prob.y_whitened) .^ 2 .- 0.5 * log(2π)))
-        samps, lev = tmcmc_threaded(ll, logprior, priorRnd, n, burnin, thin)
+        samps, lev = tmcmc_threaded(ll, logprior, priorRnd, n, burnin, thin, beta2)
     else
         lpc(X) = -0.5 .* vec(sum(abs2, X; dims = 1)) .- 0.5 * size(X, 1) * log(2π)
-        samps, lev, stages = tmcmc_batched(X -> boed_loglik_cols(prob, gps, X; with_var = with_var), lpc, priorRnd, n, burnin, MersenneTwister(rand(rng, UInt)))
+        samps, lev, stages, acc = tmcmc_batched(X -> boed_loglik_cols(prob, gps, X; with_var = with_var), lpc, priorRnd, n, burnin, MersenneTwister(rand(rng, UInt)); beta2 = beta2)
     end
     diag === nothing || (diag["tmcmc_log_ev"] = Float64(lev))
-    diag === nothing || impl !== :batched || k == 1 || (diag["tmcmc_stages"] = stages)
+    diag === nothing || impl !== :batched || k == 1 || (diag["tmcmc_stages"] = stages; diag["tmcmc_accept"] = acc)
     return Matrix(reshape(samps, n, k)')
 end

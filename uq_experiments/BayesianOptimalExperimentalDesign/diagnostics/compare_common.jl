@@ -3,7 +3,8 @@
 # Reads the combined files written by combine_diagnostics.jl (one per variant × case) from diagnostics/output/. No algorithm code is loaded.
 #
 # Environment: EXPERIMENT=l63|l96_const|l96_vec|l96_flux (default l63)
-#              CALIBRATE_DATE=<date> pin the combined files' date (default: the latest date found per variant; set it when the variants were run on different dates)
+#              CALIBRATE_DATE=<date> pin the combined files' date for every variant (default: the latest date found per variant)
+#              DIAG_DATES=tmcmc_eig=2026-10-16,tmcmc=2026-10-16,iekf_eig=2026-10-19,iekf=2026-10-19   pin the date PER variant (wins over CALIBRATE_DATE; variants not listed fall back to it)
 #              DIAG_N_ENS=<N_ens> choose the slot (default: the middle N_ens)    DIAG_VARIANTS=tmcmc_eig,iekf_eig,... (default all four)
 
 using JLD2
@@ -19,12 +20,16 @@ const CASE_STEMS = Dict("l63" => "l63", "l96_const" => "l96_const-force", "l96_v
 compare_case() = get(ENV, "EXPERIMENT", "l63")
 compare_variants() = haskey(ENV, "DIAG_VARIANTS") ? String.(split(ENV["DIAG_VARIANTS"], ",")) : ["tmcmc_eig", "tmcmc", "iekf_eig", "iekf"]
 
+# DIAG_DATES="variant=date,variant=date" -> Dict("variant" => "date")
+variant_dates() = Dict{String, String}(String(first(kv)) => String(last(kv)) for kv in (split(p, "=") for p in split(get(ENV, "DIAG_DATES", ""), ","; keepempty = false)))
+
 # Latest (or pinned-date) combined file for a variant: diagnostics_<tag>_<case stem>[_ensemble_results]_<date>.jld2
 function find_variant_file(variant::AbstractString, case::AbstractString)
     tag, stem = VARIANT_TAGS[variant], CASE_STEMS[case]
     re = Regex("^diagnostics_$(tag)_$(stem)(?:_ensemble_results)?_(\\d{4}-\\d{2}-\\d{2})\\.jld2\$")
     hits = [(m.captures[1], f) for f in (isdir(COMPARE_OUT) ? readdir(COMPARE_OUT) : String[]) for m in [match(re, f)] if m !== nothing]
-    haskey(ENV, "CALIBRATE_DATE") && filter!(h -> h[1] == ENV["CALIBRATE_DATE"], hits)
+    pinned = get(variant_dates(), variant, get(ENV, "CALIBRATE_DATE", nothing))
+    pinned === nothing || filter!(h -> h[1] == pinned, hits)
     isempty(hits) && return nothing
     return joinpath(COMPARE_OUT, sort(hits)[end][2])
 end
