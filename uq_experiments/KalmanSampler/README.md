@@ -1,4 +1,4 @@
-# GaussNewtonKalmanInversion — uq experiment
+# KalmanSampler — uq experiment
 
 Uses the `GaussNewtonInversion` (GNKI) process from `EnsembleKalmanProcesses.jl`
 — an iterated ensemble Kalman filter with statistical linearization that
@@ -14,6 +14,21 @@ raw `N_ens`-member ensemble. For the output-space coverage metric, though,
 it (`n_pushforward_samples = 1000`, matching `calibrate_emulate_sample`)
 before pushing forward — no fitted emulator or MCMC chain involved, just a
 moment-matched Gaussian resample of the ensemble itself.
+
+## Method variants
+
+The `METHOD` env var (default `sampler`, see `experiment_config.jl`) selects:
+
+| `METHOD`  | process                  | scheduler               | stopping                                   |
+|-----------|--------------------------|-------------------------|--------------------------------------------|
+| `gnki`    | `GaussNewtonInversion`   | `DefaultScheduler(0.1)` | `N_iter` iterations                        |
+| `sampler` | `Sampler(prior)`         | `EKSStableScheduler()`  | `N_iter` iterations                        |
+
+Same ensemble sizes and `N_iter` for both. Each variant writes to its own
+`output/<method>_<date>/` directory and `leaderboard_<method>_*.nc`, so they
+can run side by side, e.g. `METHOD=sampler julia --project=. calibrate_l63.jl`
+or `METHOD=sampler bash submit_l63.sh` on HPC (`--export=ALL` forwards it; no
+`--array` change needed).
 
 ## One-time setup
 

@@ -1,4 +1,4 @@
-# GaussNewtonKalmanInversion — pushforward stage, L96 (const / vec / flux forcing)
+# KalmanSampler — pushforward stage, L96 (const / vec / flux forcing)
 #
 # For each calibrate cell and each stored iteration k = 1, ..., K: fit a
 # Gaussian to the raw N_ens ensemble (in unconstrained space, so the fit

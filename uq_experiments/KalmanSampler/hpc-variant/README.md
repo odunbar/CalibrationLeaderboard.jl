@@ -1,4 +1,4 @@
-# GaussNewtonKalmanInversion HPC variant
+# KalmanSampler HPC variant
 
 This directory holds only SLURM sbatch and submit scripts — no `.jl` files, no
 `experiment_config.jl`, no `Project.toml`. Every `.jl` script and the single

@@ -1,4 +1,4 @@
-# GaussNewtonKalmanInversion — leaderboard netcdf writer
+# KalmanSampler — leaderboard netcdf writer
 #
 # Loads the stored ensemble history and pushforward output samples from every
 # calibrate cell, computes per-iteration ensemble mean/covariance (parameter

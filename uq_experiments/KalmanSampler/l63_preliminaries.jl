@@ -1,4 +1,4 @@
-# GaussNewtonKalmanInversion — L63 preliminaries (truth data + observations)
+# KalmanSampler — L63 preliminaries (truth data + observations)
 #
 # Computes the perfect-model truth trajectory and observations once, serially,
 # and saves them to output/l63_computed_preliminaries.jld2. Run this before the

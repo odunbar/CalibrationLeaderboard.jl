@@ -1,4 +1,4 @@
-# GaussNewtonKalmanInversion — L96 preliminaries (truth data + observations)
+# KalmanSampler — L96 preliminaries (truth data + observations)
 #
 # Computes the perfect-model truth trajectory and observations once, serially,
 # for one force_case (const / vec / flux), and saves them to

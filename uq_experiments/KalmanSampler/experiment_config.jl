@@ -16,17 +16,31 @@ calibrate_date = haskey(ENV, "CALIBRATE_DATE") ? Date(ENV["CALIBRATE_DATE"]) : t
 ########################################################################
 ###############  SHARED CONSTANTS  ####################################
 ########################################################################
-# This experiment runs a single method (GaussNewtonInversion, a.k.a GNKI) —
-# there is no method axis, unlike uq_experiments/calibrate_emulate_sample.
-method_key = "gnki"   # leaderboard netcdf filename prefix
+# Two method variants, selected by the METHOD env var (default: method_variants[1]).
+# Each variant writes to its own output directory / leaderboard netcdf (prefix =
+# method_key), so they can be run side by side:
+#   :gnki    GaussNewtonInversion(prior) with DefaultScheduler(0.1)
+#   :sampler Sampler(prior) with EKSStableScheduler()
+# Both use the same ensemble sizes and N_iter from the per-case config below.
+method_variants = [:sampler, :gnki]
+METHOD = method_variants[1]
+method = haskey(ENV, "METHOD") ? Symbol(ENV["METHOD"]) : METHOD
+method in method_variants || throw(ArgumentError("Unknown METHOD: $method. Expected one of $method_variants"))
+method_key = String(method)   # leaderboard netcdf filename prefix
+
+# Process / scheduler for the active method (EKP is imported by the calibrate
+# scripts that call these).
+build_process(prior) = method == :sampler ? EKP.Sampler(prior) : EKP.GaussNewtonInversion(prior)
+build_scheduler()    = method == :sampler ? EKP.EKSStableScheduler() : EKP.DefaultScheduler(0.1)
 
 ########################################################################
 ###############  PER-CASE CONFIG  #####################################
 ########################################################################
 # Important dials:
-#    terminate_at: pseudotime to terminate (DataMisfitController). T=1 is
-#                  approximately the exact posterior for GNKI; terminate_at
-#                  is set a little beyond that as a safety margin.
+#    terminate_at: pseudotime to terminate. T=1 is approximately the exact
+#                  posterior for GNKI; terminate_at is set a little beyond that
+#                  as a safety margin (informational only: GNKI stops at N_iter).
+#                  Likewise unused by the :sampler variant.
 #    N_iter:       maximum number of EKI iterations allowed (hard cap).
 #    max_iter:     number of iterations (k = 1, ..., max_iter) whose ensembles
 #                  are pushed forward and scored on the leaderboard.

@@ -1,6 +1,6 @@
-# GaussNewtonKalmanInversion — calibrate stage, L96 (const / vec / flux forcing)
+# KalmanSampler — calibrate stage, L96 (const / vec / flux forcing)
 #
-# Runs GaussNewtonInversion (GNKI) to (approximate) convergence for one
+# Runs GaussNewtonInversion (GNKI) or Sampler (METHOD=sampler) for one
 # (N_ens, rng_idx) cell, storing the ensemble at every iteration. There is no
 # separate emulate_sample stage: the ensemble at each iteration IS the
 # UQ estimate of the posterior, and is pushed forward directly in
@@ -101,16 +101,16 @@ function calibrate_one(cfg, N_ens, rng_idx, output_dir)
     R                      = prelim.R
     ic_cov_sqrt            = prelim.ic_cov_sqrt
 
-    # ── GNKI calibration ────────────────────────────────────────────────
+    # ── GNKI / Sampler calibration (method set in experiment_config.jl) ──
     initial_params = construct_initial_ensemble(rng, prior, N_ens)
-    process = GaussNewtonInversion(prior)
+    process = build_process(prior)
 
     ekpobj = EKP.EnsembleKalmanProcess(
         initial_params, y, R, deepcopy(process);
         rng = copy(rng),
         verbose = verbose_flag,
         localization_method = NoLocalization(),
-        scheduler = DefaultScheduler(0.1),
+        scheduler = build_scheduler(),
     )
 
     for i in 1:cfg.N_iter

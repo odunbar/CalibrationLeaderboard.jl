@@ -1,4 +1,4 @@
-# GaussNewtonKalmanInversion — pushforward stage, L63
+# KalmanSampler — pushforward stage, L63
 #
 # For each calibrate cell and each stored iteration k = 1, ..., K: fit a
 # Gaussian to the raw N_ens ensemble (in unconstrained space, so the fit
