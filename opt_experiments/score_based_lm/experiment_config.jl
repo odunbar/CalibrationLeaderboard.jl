@@ -109,16 +109,22 @@ function experiment_config(case::Symbol)
                   N_ens_sizes = [10, 20, 30, 40, 60, 80, 100, 120, 140, 160],
                   tau_max = 8.0, lag_stride = 5,
                   sigma = 0.025, hidden = 128, base = 16,
-                  epochs_init = 150, epochs_warm = 20,
+                  epochs_init = 150, epochs_warm = 10,
                   lr_init = 8e-4, lr_warm = 3e-4, batch = 128, weight_decay = 1e-4,
+                  score_subsample = 20,   # DSM trains on every 20th window sample (see refresh_score!) with epochs_warm = 10;
+                                          # as in score_based_adam, where the full window cost ~70 h/run of net training.
+                                          # Not yet profiled for LM.
                   common...)
     elseif case == :l96_flux
         return (; model = "l96", force_case = "flux-force", nx = 100,
                   N_ens_sizes = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
                   tau_max = 8.0, lag_stride = 10,
                   sigma = 0.025, hidden = 128, base = 16,
-                  epochs_init = 150, epochs_warm = 20,
+                  epochs_init = 150, epochs_warm = 10,
                   lr_init = 8e-4, lr_warm = 3e-4, batch = 128, weight_decay = 1e-4,
+                  score_subsample = 20,   # DSM trains on every 20th window sample (see refresh_score!) with epochs_warm = 10;
+                                          # as in score_based_adam, where the full window cost ~70 h/run of net training.
+                                          # Not yet profiled for LM.
                   common...)
     else
         throw(ArgumentError("Unknown experiment: $case"))

@@ -10,7 +10,7 @@
 #                      e.g. "run2" → jobs appear as "run_l96f_run2".
 #
 # Note: flux-force trains a Flux.jl NN per cell and runs ForwardDiff through
-# it (nu ≈ 61 params, nx=100). If tasks time out, resubmit with --time=08:00:00.
+# it (nu ≈ 61 params, nx=100). The run_array job is submitted with --time=18:00:00 (run_array.sbatch default is 8 h).
 
 set -euo pipefail
 
@@ -46,6 +46,7 @@ RUN_JID=$(sbatch --parsable \
                  -A esm \
                  --job-name="run_${LABEL}" \
                  --array=1-900 \
+                 --time=18:00:00 \
                  --dependency=afterok:${PRELIM_JID} \
                  --kill-on-invalid-dep=yes \
                  --export=ALL,SCRIPT=run_l96_sblm.jl,EXPERIMENT=l96_flux,RUN_DATE=${RUN_DATE},SCORE_KIND=${SCORE_KIND},BUDGET_MODE=${BUDGET_MODE} \
