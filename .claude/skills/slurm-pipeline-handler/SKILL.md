@@ -18,13 +18,13 @@ description: >-
 
 # SLURM Pipeline Handler
 
-`uq_experiments/GaussNewtonKalmanInversion/`, `uq_experiments/calibrate_emulate_sample/`,
+`uq_experiments/KalmanSampler/`, `uq_experiments/calibrate_emulate_sample/`,
 and `opt_experiments/levenberg_marquardt/` are the canonical examples: one copy
 of every `.jl` script and of `experiment_config.jl`, living in the method
 directory; `hpc-variant/` holds only sbatch + submit scripts (see "hpc-variant
 layout" below for why and how). `calibrate_emulate_sample` is the fuller UQ
 example — it has the extra `emulate_sample` / `diagnostic_plots` stages that
-`GaussNewtonKalmanInversion` skips (see `references/pipeline-uq.md`); read
+`KalmanSampler` skips (see `references/pipeline-uq.md`); read
 either for the current shape, they follow the same conventions.
 
 Read `references/pipeline-uq.md` for the full UQ pipeline spec.
@@ -117,7 +117,7 @@ run_date = haskey(ENV, "RUN_DATE") ? Date(ENV["RUN_DATE"]) : today()
 ```
 Treat this as standard practice for any new pipeline, UQ or OPT — not an
 aspirational nice-to-have. Worked examples: `opt_experiments/levenberg_marquardt/`,
-`uq_experiments/GaussNewtonKalmanInversion/`, `uq_experiments/calibrate_emulate_sample/`.
+`uq_experiments/KalmanSampler/`, `uq_experiments/calibrate_emulate_sample/`.
 
 ## Precompile job — always separate
 
@@ -180,7 +180,7 @@ call, into the prelim script.
 Chain: `preliminaries →(afterok)→ run_array →(afterany)→ leaderboard` —
 `afterok` + `--kill-on-invalid-dep=yes` so a failed prelim stops wasted work;
 `afterany` on the leaderboard so it processes whatever ran, even if some array
-tasks failed. Worked examples: `uq_experiments/GaussNewtonKalmanInversion/`
+tasks failed. Worked examples: `uq_experiments/KalmanSampler/`
 (the original) and `uq_experiments/calibrate_emulate_sample/` (retrofitted
 from the partial-fix anti-pattern above). See `references/pipeline-uq.md` /
 `pipeline-opt.md` for full worked `sbatch --export=ALL,...` chains.
@@ -192,12 +192,12 @@ from the partial-fix anti-pattern above). See `references/pipeline-uq.md` /
 1. Identify the stages: `calibrate`, optionally `emulate_sample`,
    `pushforward_from_posterior`, optionally `diagnostic_plots`,
    `exp_to_leaderboard`. Not every method needs all of them —
-   `GaussNewtonKalmanInversion` skips `emulate_sample`/`diagnostic_plots`
+   `KalmanSampler` skips `emulate_sample`/`diagnostic_plots`
    entirely because the raw ensemble at each iteration already is the
    posterior sample set.
 2. Per-cell stages: use `array.sbatch` template. Serial stages: use `single_job.sbatch`.
 3. Follow the "hpc-variant layout" convention below. Use
-   `uq_experiments/GaussNewtonKalmanInversion/` (3-stage) or
+   `uq_experiments/KalmanSampler/` (3-stage) or
    `uq_experiments/calibrate_emulate_sample/` (5-stage, with emulate_sample and
    diagnostic_plots) as the template, depending on which stage set the new
    method needs.
@@ -267,7 +267,7 @@ julia --project=.. "../${SCRIPT}" "${SLURM_ARRAY_TASK_ID}"
   from inside `hpc-variant/` before trusting it.
 
 Log paths use `../output/slurm/`; submit scripts do `mkdir -p ../output/slurm`.
-Worked examples: `levenberg_marquardt/`, `adam/`, `GaussNewtonKalmanInversion/`,
+Worked examples: `levenberg_marquardt/`, `adam/`, `KalmanSampler/`,
 `calibrate_emulate_sample/`.
 
 **Why not copy scripts into `hpc-variant/` instead?** It isn't broken — Julia's
@@ -311,7 +311,7 @@ found only after the pipeline finished — without reconstructing that stage's
 `--export=ALL,...` flags from scratch. Use `<yyyy-mm-dd>` as a literal
 placeholder for the date; the person running it substitutes the real
 `RUN_DATE`/`CALIBRATE_DATE`. Worked examples: every `submit_l*.sh` in
-`uq_experiments/GaussNewtonKalmanInversion/hpc-variant/` and
+`uq_experiments/KalmanSampler/hpc-variant/` and
 `uq_experiments/BayesianOptimalExperimentalDesign/hpc-variant/`.
 
 ## Template files (in assets/)

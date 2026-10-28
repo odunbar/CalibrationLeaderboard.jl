@@ -292,7 +292,7 @@ it into its own `l63_preliminaries.jl` / `l96_preliminaries.jl` that computes
 and saves unconditionally (single serial job, no race), and have
 `calibrate_<MODEL>.jl` load-or-error instead of compute-or-load. Scaffold this
 for every new UQ method — two worked examples to follow:
-`uq_experiments/GaussNewtonKalmanInversion/` and
+`uq_experiments/KalmanSampler/` and
 `uq_experiments/calibrate_emulate_sample/`.
 
 After scaffolding, run `slurm-pipeline-handler` to add the HPC variant (it

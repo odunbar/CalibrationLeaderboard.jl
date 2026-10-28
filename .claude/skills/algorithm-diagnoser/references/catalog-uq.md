@@ -36,7 +36,7 @@ covariance, G_k = forward outputs of the ensemble at iteration k.
 
 These show *how* coverage fails. The method-specific keys below show *why*.
 
-## GNKI / EKI (GaussNewtonKalmanInversion; also the calibrate step of CES)
+## GNKI / EKI (KalmanSampler; also the calibrate step of CES)
 
 GNKI saves only `phi_stored`. **Save the `ekpobj`** in `calibrate_l{63,96}.jl`
 (see SKILL.md § 2; ≈ 4 MB at flux N_ens=90). Then, post-hoc per k,

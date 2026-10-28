@@ -25,7 +25,7 @@ description: >-
 # Algorithm Diagnoser
 
 Take one existing method (e.g. `opt_experiments/adam/`,
-`uq_experiments/GaussNewtonKalmanInversion/`), find out *why* its runs do or
+`uq_experiments/KalmanSampler/`), find out *why* its runs do or
 don't reach the leaderboard target, and leave behind:
 
 | Deliverable | Where |

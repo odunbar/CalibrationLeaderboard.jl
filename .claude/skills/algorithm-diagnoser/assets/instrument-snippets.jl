@@ -117,7 +117,7 @@ if outer_iter % 100 == 0                             # stride without finalize! 
 end
 
 ########################################################################
-# 3. GNKI — save the ekpobj it already builds (uq_experiments/GaussNewtonKalmanInversion/calibrate_l{63,96}.jl)
+# 3. GNKI — save the ekpobj it already builds (uq_experiments/KalmanSampler/calibrate_l{63,96}.jl)
 ########################################################################
 # CORRECT: one extra key in the existing JLD2.save. Size ≈ (nu + ny) · N_ens · (N_iter + 1) · 8 B
 # (≈ 4 MB at flux N_ens = 90); check Base.summarysize(ekpobj) on a smoke run against the storage cap.

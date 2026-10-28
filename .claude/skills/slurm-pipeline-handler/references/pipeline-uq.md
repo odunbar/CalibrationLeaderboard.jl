@@ -10,7 +10,7 @@ maturity:
   diagnostics/leaderboard). Good reference for stage names, array-sbatch
   conventions, and a case where per-task setup (priors, forcing params, NN
   structure) is non-trivial enough to be worth reading in `build_setup`.
-- `uq_experiments/GaussNewtonKalmanInversion/` — a leaner 3-stage pipeline (no
+- `uq_experiments/KalmanSampler/` — a leaner 3-stage pipeline (no
   `emulate_sample`, no `diagnostic_plots`, because the raw ensemble at each
   iteration already is the posterior sample set). Good reference for the
   minimal shape a new UQ method can get away with.
@@ -31,7 +31,7 @@ l96_preliminaries  ─(afterok)→  calibrate_array  ──┤
                                                                                                                                     └─(afterany)→  exp_to_leaderboard
 ```
 
-### GaussNewtonKalmanInversion — L63 and L96 (const / vec / flux)
+### KalmanSampler — L63 and L96 (const / vec / flux)
 ```
 l63_preliminaries / l96_preliminaries  ─(afterok)→  calibrate_array  ─(afterany)→  pushforward_from_posterior  ─(afterany)→  exp_to_leaderboard
 ```
@@ -84,13 +84,13 @@ Each script ends with a manual-resubmission reference block (commented
 ## Serial (local) invocation
 
 ```bash
-# GaussNewtonKalmanInversion — L63
+# KalmanSampler — L63
 julia --project=. l63_preliminaries.jl
 julia --project=. calibrate_l63.jl
 julia --project=. pushforward_from_posterior_l63.jl
 julia --project=. exp_to_leaderboard.jl
 
-# GaussNewtonKalmanInversion — L96 (set EXPERIMENT env var)
+# KalmanSampler — L96 (set EXPERIMENT env var)
 EXPERIMENT=l96_const julia --project=. l96_preliminaries.jl
 EXPERIMENT=l96_const julia --project=. calibrate_l96.jl
 EXPERIMENT=l96_const julia --project=. pushforward_from_posterior_l96.jl
