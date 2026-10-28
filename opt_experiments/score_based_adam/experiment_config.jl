@@ -111,8 +111,12 @@ function experiment_config(case::Symbol)
                   N_ens_sizes = [10, 20, 30, 40, 60, 80, 100, 120, 140, 160],
                   tau_max = 8.0, lag_stride = 5,
                   sigma = 0.025, hidden = 128, base = 16,
-                  epochs_init = 150, epochs_warm = 20,
+                  epochs_init = 150, epochs_warm = 10,
                   lr_init = 8e-4, lr_warm = 3e-4, batch = 128, weight_decay = 1e-4,
+                  score_subsample = 20,   # DSM trains on every 20th window sample (see refresh_score!): the dt=0.01
+                                          # samples are strongly autocorrelated, and the full window (with epochs_warm = 20)
+                                          # made one run ~70 h of net training (steps ~ epochs * N_ens * 5000 / batch).
+                                          # stride 20 + epochs_warm 10 -> ~2.6 h/run at N_ens = 10 (4 threads), measured
                   adam_alpha = 0.75,
                   common...)
     elseif case == :l96_flux
@@ -121,8 +125,10 @@ function experiment_config(case::Symbol)
                   N_ens_sizes = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
                   tau_max = 8.0, lag_stride = 10,
                   sigma = 0.025, hidden = 128, base = 16,
-                  epochs_init = 150, epochs_warm = 20,
+                  epochs_init = 150, epochs_warm = 10,
                   lr_init = 8e-4, lr_warm = 3e-4, batch = 128, weight_decay = 1e-4,
+                  score_subsample = 20,   # as l96_vec: DSM trains on every 20th window sample (see refresh_score!) with
+                                          # epochs_warm = 10, to cut net training from ~70 h/run. Not yet profiled at nx = 100
                   adam_alpha = 0.025,
                   common...)
     else

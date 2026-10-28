@@ -168,8 +168,14 @@ refresh_score!(::KGMMScore, X::AbstractMatrix, cfg, rng_net::AbstractRNG) =
 
 function refresh_score!(model::NeuralScore, X::AbstractMatrix, cfg, rng_net::AbstractRNG)
     first = !model.trained
+    # Optional thinning of the training set (cfg.score_subsample, default 1 = all samples).
+    # Columns of X are concatenated branch windows, so a stride picks evenly in time within
+    # each branch.  Only the net fit sees the subset; the caller still evaluates the score
+    # (GFDT) on the full window.
+    stride = get(cfg, :score_subsample, 1)
+    Xfit   = stride > 1 ? X[:, 1:stride:end] : X
     stats = train_score!(
-        model, X;
+        model, Xfit;
         epochs       = first ? cfg.epochs_init : cfg.epochs_warm,
         lr           = first ? cfg.lr_init : cfg.lr_warm,
         batch        = cfg.batch,

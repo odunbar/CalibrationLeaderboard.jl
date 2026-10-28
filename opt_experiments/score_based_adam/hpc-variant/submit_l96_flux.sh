@@ -47,6 +47,7 @@ RUN_JID=$(sbatch --parsable \
                  -A esm \
                  --job-name="run_${LABEL}" \
                  --array=1-900 \
+                 --time=18:00:00 \
                  --dependency=afterok:${PRELIM_JID} \
                  --kill-on-invalid-dep=yes \
                  --export=ALL,SCRIPT=run_l96_sbadam.jl,EXPERIMENT=l96_flux,RUN_DATE=${RUN_DATE},SCORE_KIND=${SCORE_KIND},BUDGET_MODE=${BUDGET_MODE} \
