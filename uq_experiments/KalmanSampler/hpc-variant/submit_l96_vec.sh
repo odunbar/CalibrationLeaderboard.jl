@@ -5,6 +5,12 @@
 #   EXP_ID (optional): label appended to SLURM job names so the queue stays
 #                      readable when all four cases run simultaneously,
 #                      e.g. "run2" -> jobs appear as "calib_l96v_run2".
+#
+# Method variant: set METHOD to switch between the variants in
+# experiment_config.jl (:sampler = Sampler(prior) + EKSStableScheduler(),
+# :gnki = GaussNewtonInversion). If unset, the default (first entry of
+# method_variants in experiment_config.jl) is used. e.g.
+#   METHOD=gnki bash submit_l96_vec.sh
 
 set -euo pipefail
 
@@ -14,6 +20,12 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 cd "$DIR"
 mkdir -p ../output/slurm
+
+# Resolve the method (METHOD env var, else the default in experiment_config.jl),
+# export it so every sbatch stage (--export=ALL) runs the same variant, and echo it.
+METHOD=${METHOD:-$(sed -n 's/^method_variants = \[:\([a-z_]*\).*/\1/p' ../experiment_config.jl)}
+export METHOD
+echo "=== Method: ${METHOD} (switch with: METHOD=<sampler|gnki> bash $(basename "$0")) ==="
 
 RUN_DATE=$(date +%Y-%m-%d)
 
