@@ -167,7 +167,7 @@ function history_matching_one(cfg, N_ens, rng_idx, output_dir)
             n_posterior_samples, cfg.max_rejection_samples, cfg.n_candidate_batch, rng,
         )
         posteriors_by_k[wave] = posterior
-        ok || @warn "NROY draw at wave $wave only found $(size(posterior, 2))/$(n_posterior_samples) samples within max_rejection_samples (N_ens=$N_ens, rng_idx=$rng_idx, case=$(cfg.force_case))."
+        ok || @warn "NROY draw at wave $wave only found $(size(posterior, 2))/$(n_posterior_samples) samples within max_rejection_samples: $(cfg.max_rejection_samples), (N_ens=$N_ens, rng_idx=$rng_idx, case=$(cfg.force_case))."
         @info "History matching wave $wave/$(cfg.max_waves) done (N_ens=$N_ens, rng_idx=$rng_idx, case=$(cfg.force_case))"
 
         wave == cfg.max_waves && break
