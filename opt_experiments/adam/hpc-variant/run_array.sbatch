@@ -19,7 +19,7 @@
 #SBATCH --output=../output/slurm/run_%A_%a.out
 #SBATCH --error=../output/slurm/run_%A_%a.err
 #SBATCH --array=1-300%100
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
 #SBATCH --ntasks=1

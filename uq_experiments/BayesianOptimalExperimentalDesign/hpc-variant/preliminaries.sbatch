@@ -15,7 +15,7 @@
 #SBATCH --output=../output/slurm/prelim_%j.out
 #SBATCH --error=../output/slurm/prelim_%j.err
 #SBATCH --time=00:30:00
-#SBATCH --mem=8G
+#SBATCH --mem=12G
 #SBATCH --cpus-per-task=4
 #SBATCH --ntasks=1
 #SBATCH --constraint=cascadelake
