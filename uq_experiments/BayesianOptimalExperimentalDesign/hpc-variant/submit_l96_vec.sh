@@ -2,7 +2,7 @@
 # Submit preliminaries + calibrate + pushforward + leaderboard for the L96 vec-force case.
 #
 # Usage: bash submit_l96_vec.sh [EXP_ID]
-#   BOED_VARIANT (optional env var): tmcmc_eig (default) | tmcmc | iekf_eig | iekf — variant; sbatch forwards it to every stage,
+#   BOED_VARIANT (optional env var): tmcmc_eig (default) | tmcmc | iekf_eig | iekf | eks_eig | eks — variant; sbatch forwards it to every stage,
 #                      e.g. "BOED_VARIANT=iekf bash submit_l96_vec.sh"; outputs go to output/boed-<variant>_<date>/.
 #   EXP_ID (optional): label appended to SLURM job names so the queue stays
 #                      readable when all four cases run simultaneously,
@@ -19,7 +19,7 @@ mkdir -p ../output/slurm
 
 RUN_DATE=$(date +%Y-%m-%d)
 
-echo "GBOED variant: ${BOED_VARIANT:-<unset: experiment_config.jl default>}  (set BOED_VARIANT=tmcmc_eig|tmcmc|iekf_eig|iekf to choose; forwarded to every stage)"
+echo "GBOED variant: ${BOED_VARIANT:-<unset: experiment_config.jl default>}  (set BOED_VARIANT=tmcmc_eig|tmcmc|iekf_eig|iekf|eks_eig|eks to choose; forwarded to every stage)"
 echo "NOTE: This script does not precompile. Run bash submit_precompile.sh first"
 echo "      if you haven't done so recently (e.g. after a fresh checkout or package update)."
 

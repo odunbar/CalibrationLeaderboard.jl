@@ -16,7 +16,7 @@
 # and, at the final iteration, to produce the stored "posterior"). Goes
 # straight from here to pushforward_from_posterior_l63.jl (see README.md;
 # the same reasoning is why uq_experiments/HistoryMatching and
-# uq_experiments/GaussNewtonKalmanInversion also merge stages).
+# uq_experiments/KalmanSampler also merge stages).
 #
 # Local (all cells):  julia --project=. calibrate_l63.jl
 # Local (one cell):   julia --project=. calibrate_l63.jl <task_index>

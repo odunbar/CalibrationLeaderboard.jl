@@ -17,9 +17,12 @@ calibrate_date = haskey(ENV, "CALIBRATE_DATE") ? Date(ENV["CALIBRATE_DATE"]) : t
 #   :iekf      -> no EIG, and no ST-MCMC: the posterior is the final ensemble of an IEKF (GaussNewtonInversion, fixed-step DefaultScheduler) run on the GP-mean surrogate (no
 #                 forward evaluations), and the batch is N_ens draws from it (key "boed-iekf").
 #   :iekf_eig  -> the same GP-surrogate IEKF posterior, but the batch is the joint-batch EIG maximization against (a subsample of) the IEKF ensemble (key "boed-iekf-eig").
+#   :eks       -> no EIG: the posterior is the final ensemble of the ensemble Kalman SAMPLER (EKP.Sampler, EKS, EKSStableScheduler with alpha = eks_alpha, eks_max_iters steps) on the GP-mean surrogate, eks_n_particles (200)
+#                 members, and the batch is N_ens draws from it (key "boed-eks").
+#   :eks_eig   -> the same GP-surrogate EKS posterior, with the joint-batch EIG maximization against (a subsample of) the EKS ensemble (key "boed-eks-eig").
 # The GP fit, pushforward and leaderboard stages are identical across variants; only calibrate's posterior-sampling and acquisition steps differ. Override via the BOED_VARIANT env var
 # (set it for EVERY stage, so pushforward/exp_to_leaderboard read the matching output directory).
-boed_variants = [:tmcmc_eig, :tmcmc, :iekf_eig, :iekf]
+boed_variants = [:tmcmc_eig, :tmcmc, :iekf_eig, :iekf, :eks_eig, :eks]
 BOED_VARIANT = boed_variants[1]
 boed_variant = haskey(ENV, "BOED_VARIANT") ? Symbol(replace(ENV["BOED_VARIANT"], "-" => "_")) : BOED_VARIANT
 boed_variant in boed_variants || throw(ArgumentError("Unknown BOED_VARIANT: $boed_variant. Expected one of $boed_variants"))
@@ -28,8 +31,8 @@ boed_variant in boed_variants || throw(ArgumentError("Unknown BOED_VARIANT: $boe
 ###############  SHARED CONSTANTS  ####################################
 ########################################################################
 # This experiment runs a single method (GBOED) — there is no method axis,
-# unlike uq_experiments/calibrate_emulate_sample — but four variants (see above), each with its own output directory/netcdf.
-method_key = Dict(:tmcmc_eig => "boed-tmcmc-eig", :tmcmc => "boed-tmcmc", :iekf_eig => "boed-iekf-eig", :iekf => "boed-iekf")[boed_variant]
+# unlike uq_experiments/calibrate_emulate_sample — but six variants (see above), each with its own output directory/netcdf.
+method_key = Dict(:tmcmc_eig => "boed-tmcmc-eig", :tmcmc => "boed-tmcmc", :iekf_eig => "boed-iekf-eig", :iekf => "boed-iekf", :eks_eig => "boed-eks-eig", :eks => "boed-eks")[boed_variant]
 
 ########################################################################
 ###############  PER-CASE CONFIG  #####################################
@@ -56,6 +59,10 @@ method_key = Dict(:tmcmc_eig => "boed-tmcmc-eig", :tmcmc => "boed-tmcmc", :iekf_
 #    gp_warm_start:         (off by default: in benchmarks it cost 2-11 nats of marginal likelihood for a further ~1.5x speedup in 24-D only) start each iteration's GP fit from the previous iteration's hyperparameters (clamped inside the new bounds) instead of the std(Z)-based guess.
 #    batch_init_strategy:   :posterior_subsample (subsample the current ST-MCMC posterior) or :fresh_lhs (a fresh LHS draw).
 #    iekf_step, iekf_iters: (:iekf and :iekf_eig variants only) fixed-step DefaultScheduler size and number of steps for the GP-surrogate IEKF posterior sampler (iekf_step*iekf_iters = T: now 0.1 × 30 = 3; it was 0.1 × 10 = 1).
+#    eks_n_particles, eks_alpha, eks_max_iters, eks_T, eks_sampler_type: (:eks and :eks_eig variants only) ensemble size (200), EKSStableScheduler numerator alpha (0.25: the step is Δt = alpha/(‖(G-Ḡ)ᵀΓ⁻¹(G-y)‖/N + eps),
+#                           so smaller alpha = smaller Euler steps; alpha > 1 is unstable, alpha = 1 is EKP's default), number of steps (500, a fixed cost per iteration), target algorithm time (Inf = run exactly eks_max_iters steps;
+#                           a finite value stops earlier once the accumulated time reaches it, and run_eks warns if the step cap is hit first) and EKP.Sampler type ("eks" = Garbuno-Inigo et al. 2019; "aldi") of the GP-surrogate ensemble Kalman sampler. The posterior has eks_n_particles draws,
+#                           not n_posterior_samples; pushforward pads the shortfall with NaN rows, which the leaderboard stage drops.
 #    retain_var:            fraction of variance retained by the GP's OUTPUT whitening (against R).
 #    retain_var_input:      fraction of variance retained by the GP's INPUT whitening (against the prior); also the GBOED candidate space's dimension, so set per case (0.99 for l63/l96_const's small θ, 0.9 for l96_vec/l96_flux's slowly-decaying prior spectrum).
 function experiment_config(case::Symbol)
@@ -82,8 +89,13 @@ function experiment_config(case::Symbol)
         gp_warm_start = false,
         batch_init_strategy = :posterior_subsample,
         retain_var = 0.99,
-        iekf_step = 0.1,   # :iekf/:iekf_eig variants only: fixed DefaultScheduler step (matches GaussNewtonKalmanInversion / CES's IEKF)
+        iekf_step = 0.1,   # :iekf/:iekf_eig variants only: fixed DefaultScheduler step (matches KalmanSampler / CES's IEKF)
         iekf_iters = 30,   # :iekf/:iekf_eig variants only: 30 steps of 0.1 (T = 3; was 10 steps, T = 1, the finite-time approximate posterior)
+        eks_n_particles = 200,    # :eks/:eks_eig variants only: ensemble size of the ensemble Kalman sampler
+        eks_alpha = 0.25,         # :eks/:eks_eig variants only: EKSStableScheduler numerator (step size scale; offline scans: alpha = 0.25 was closer to the ST-MCMC reference than 1, alpha >= 3 unstable)
+        eks_max_iters = 500,      # :eks/:eks_eig variants only: number of sampler steps (with eks_T = Inf, exactly this many)
+        eks_T = Inf,              # :eks/:eks_eig variants only: algorithm time to stop at (Inf = fixed eks_max_iters steps, the recommended setting)
+        eks_sampler_type = "eks", # :eks/:eks_eig variants only: EKP.Sampler type
         variant = boed_variant,
         calibrate_date = calibrate_date,
     )

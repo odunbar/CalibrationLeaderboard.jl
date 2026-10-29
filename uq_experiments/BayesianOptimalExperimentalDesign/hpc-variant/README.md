@@ -17,7 +17,7 @@ points at the method directory's `Project.toml`. (See "avoid copying scripts"
 in the `slurm-pipeline-handler` skill.)
 
 There is no separate emulate_sample stage — like `HistoryMatching` and
-`GaussNewtonKalmanInversion`, the GP fit, ST-MCMC posterior sampling, and (here
+`KalmanSampler`, the GP fit, ST-MCMC posterior sampling, and (here
 additionally) the EIG acquisition-batch optimization all live inside every
 iteration of `calibrate_l*.jl` (see the top-level README).
 

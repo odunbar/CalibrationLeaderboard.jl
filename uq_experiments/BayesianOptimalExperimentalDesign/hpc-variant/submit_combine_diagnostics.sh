@@ -8,7 +8,7 @@
 #                    variant, i.e. the newest output/boed-<variant>_<yyyy-mm-dd>/ directory, so variants run on different dates (e.g. tmcmc on
 #                    2026-10-16, iekf on 2026-10-19) are each combined at their own latest date.
 #   Env overrides (optional):
-#     VARIANTS="tmcmc_eig tmcmc iekf_eig iekf"     which variants to combine (default: all four)
+#     VARIANTS="tmcmc_eig tmcmc iekf_eig iekf"     which variants to combine (default: these four; add eks_eig eks for the EKS variants)
 #     CASES="l63 l96_const l96_vec l96_flux"       which cases to combine (default: all four)
 #     DRY_RUN=1                                    print what would be submitted, submit nothing
 #   Examples:
@@ -49,8 +49,8 @@ echo "Combining diagnostics; date: ${ARG_DATE:-<latest found per variant>}; vari
 n_submitted=0
 for V in $VARIANTS; do
     case "$V" in
-        tmcmc_eig|tmcmc|iekf_eig|iekf) ;;
-        *) echo "ERROR: unknown variant '$V' (expected tmcmc_eig, tmcmc, iekf_eig, iekf)" >&2; exit 1 ;;
+        tmcmc_eig|tmcmc|iekf_eig|iekf|eks_eig|eks) ;;
+        *) echo "ERROR: unknown variant '$V' (expected tmcmc_eig, tmcmc, iekf_eig, iekf, eks_eig, eks)" >&2; exit 1 ;;
     esac
     KEY="boed-${V//_/-}"                      # leaderboard key, e.g. boed-tmcmc-eig (experiment_config.jl's method_key)
     if [ -n "$ARG_DATE" ]; then

@@ -473,8 +473,8 @@ end
 ###############  Variants: posterior sampler + acquisition  ############
 ########################################################################
 # Two independent dials (see experiment_config.jl's BOED_VARIANT):
-#   posterior sampler: ST-MCMC (:tmcmc_eig, :tmcmc) or IEKF on the GP surrogate (:iekf_eig, :iekf)
-#   acquisition:       joint-batch EIG optimization (:tmcmc_eig, :iekf_eig) or just N_ens draws from that posterior (:tmcmc, :iekf)
+#   posterior sampler: ST-MCMC (:tmcmc_eig, :tmcmc), IEKF on the GP surrogate (:iekf_eig, :iekf) or the ensemble Kalman sampler (EKS) on the GP surrogate (:eks_eig, :eks)
+#   acquisition:       joint-batch EIG optimization (:tmcmc_eig, :iekf_eig, :eks_eig) or just N_ens draws from that posterior (:tmcmc, :iekf, :eks)
 
 # IEKF = GaussNewtonInversion, run on the GP-mean forward map (no true forward evaluations) in the truncated prior-whitened input space (prior N(0, I_k)) against the truncated
 # output-whitened observation (noise I, matching boed_loglik's Γ_obs≈I; unlike ST-MCMC it ignores the GP predictive variance). Starts from n_samples LHS prior draws, and runs
@@ -511,14 +511,55 @@ function run_iekf(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::Abstract
     return Matrix{Float64}(EKP.get_u_final(ekp))
 end
 
+# GP posterior MEAN only at the columns of X. GaussianProcesses.predict_f also computes the predictive variance one point at a time (O(n_train²) per point), which the mean-driven samplers
+# discard; this is the same mean (predictMVN's `mx + Kcross' * alpha`; agrees with predict_f to ~1e-12 on the l96_vec GPs) at about half the cost. Used by run_eks, which makes hundreds of GP calls.
+gp_mean_only(gp::GaussianProcesses.GPE, X::AbstractMatrix) =
+    GaussianProcesses.mean(gp.mean, X) .+ GaussianProcesses.cov(gp.kernel, gp.x, X, GaussianProcesses.KernelData(gp.kernel, gp.x, X))' * gp.alpha
+
+# Ensemble Kalman SAMPLER (EKP.Sampler(prior); sampler_type = "eks" is the Garbuno-Inigo et al. 2019 ensemble Kalman sampler, "aldi" the affine-invariant Langevin variant) on the GP-mean forward map, in the
+# same truncated prior-whitened space as run_iekf (prior N(0, I_k), noise I, initial LHS ensemble; like run_iekf it ignores the GP predictive variance). Driven by EKSStableScheduler(alpha, eps()) (Δt = alpha / (‖(G − Ḡ)ᵀ Γ⁻¹ (G − y)‖/N + eps): data-dependent, and alpha scales every step; the default 1 is EKP's, larger alpha = fewer steps to reach T but more Euler error) and stopped
+# once the accumulated algorithm time reaches `T_end`, or after `max_iters` steps. Unlike the finite-time IEKF this targets the posterior as T → ∞ (the config runs 500 steps at alpha = 0.25; test2 shows EKS much closer to the
+# ST-MCMC reference than the IEKF on the l96_vec / l96_flux GPs). Returns the final ensemble, k_R_prior x n_samples. `T_end = Inf` runs exactly `max_iters` steps (the config's setting); `diag` receives eks_steps, eks_T_reached (< a finite T_end if max_iters was hit) and eks_secs.
+function run_eks(prob::BOEDProblem, gps::BOEDGPs, n_samples::Int, rng::AbstractRNG; T_end::Real = 100.0, max_iters::Int = 500, sampler_type::AbstractString = "eks", alpha::Real = 1.0, diag::Union{Nothing, AbstractDict} = nothing)
+    k_in, k_out = prob.prior_basis.k_R, prob.output_basis.k_R
+    prior = ParameterDistribution(Parameterized(MvNormal(zeros(k_in), Matrix(1.0I, k_in, k_in))), fill(no_constraint(), k_in), "z_whitened")
+    ekp = EKP.EnsembleKalmanProcess(
+        lhs_standard_normal_sample(k_in, n_samples, rng), prob.y_whitened, Matrix(1.0I, k_out, k_out), EKP.Sampler(prior; sampler_type = sampler_type);
+        rng = copy(rng), scheduler = EKP.EKSStableScheduler(Float64(alpha), Float64(eps())), verbose = false,
+    )
+    t0 = time()
+    T = 0.0
+    for _ in 1:max_iters
+        U = Matrix{Float64}(EKP.get_u_final(ekp))
+        G = zeros(k_out, n_samples)
+        Threads.@threads :dynamic for j in 1:k_out
+            G[j, :] = gp_mean_only(gps.gps[j], U)
+        end
+        EKP.update_ensemble!(ekp, G)
+        T = sum(Float64.(EKP.get_Δt(ekp)))
+        T >= T_end && break
+    end
+    n_steps = length(EKP.get_Δt(ekp))
+    isfinite(T_end) && T < T_end && @warn "run_eks: step cap hit before the target algorithm time" max_iters T_reached = round(T; sigdigits = 3) T_end
+    @info "run_eks: done" n_steps T_reached = round(T; sigdigits = 4) elapsed_s = round(time() - t0; digits = 2)
+    if diag !== nothing
+        diag["eks_steps"] = n_steps
+        diag["eks_T_reached"] = T
+        diag["eks_secs"] = time() - t0
+    end
+    return Matrix{Float64}(EKP.get_u_final(ekp))
+end
+
 # The variant's posterior sampler, k_R_prior x n_samples (prior-whitened coords).
 function sample_posterior(variant::Symbol, prob::BOEDProblem, gps::BOEDGPs, rng::AbstractRNG, cfg; diag::Union{Nothing, AbstractDict} = nothing)
     if variant in (:iekf, :iekf_eig)
         return run_iekf(prob, gps, cfg.n_posterior_samples, rng; step = cfg.iekf_step, iters = cfg.iekf_iters, diag = diag)
+    elseif variant in (:eks, :eks_eig)
+        return run_eks(prob, gps, cfg.eks_n_particles, rng; T_end = cfg.eks_T, max_iters = cfg.eks_max_iters, alpha = cfg.eks_alpha, sampler_type = cfg.eks_sampler_type, diag = diag)
     elseif variant in (:tmcmc, :tmcmc_eig)
         return run_tmcmc(prob, gps, cfg.n_posterior_samples, rng; burnin = cfg.tmcmc_burnin, thin = cfg.tmcmc_thin, diag = diag)
     else
-        error("Unknown GBOED variant: $variant (expected :tmcmc_eig, :tmcmc, :iekf_eig or :iekf)")
+        error("Unknown GBOED variant: $variant (expected :tmcmc_eig, :tmcmc, :iekf_eig, :iekf, :eks_eig or :eks)")
     end
 end
 
@@ -528,7 +569,7 @@ function acquire_batch(
     diag::Union{Nothing, AbstractDict} = nothing,
 )
     k_R_prior = prob.prior_basis.k_R
-    if variant in (:tmcmc_eig, :iekf_eig)
+    if variant in (:tmcmc_eig, :iekf_eig, :eks_eig)
         hyperparams = extract_hyperparams(gps)
         X_eig = subsample_columns(X_post, cfg.n_eig_posterior_samples, rng)   # EIG cost ~n^3 per mode; candidates still initialised from all of X_post
         X_cand0 = init_candidate_batch(X_post, N_ens, rng; strategy = cfg.batch_init_strategy)
@@ -541,10 +582,10 @@ function acquire_batch(
             ),
             "optimize_batch ($label)",
         )
-    elseif variant in (:tmcmc, :iekf)
+    elseif variant in (:tmcmc, :iekf, :eks)
         # No EIG: N_ens draws straight from the current posterior (deliberately not cfg.batch_init_strategy, which can be :fresh_lhs).
         return init_candidate_batch(X_post, N_ens, rng; strategy = :posterior_subsample)
     else
-        error("Unknown GBOED variant: $variant (expected :tmcmc_eig, :tmcmc, :iekf_eig or :iekf)")
+        error("Unknown GBOED variant: $variant (expected :tmcmc_eig, :tmcmc, :iekf_eig, :iekf, :eks_eig or :eks)")
     end
 end

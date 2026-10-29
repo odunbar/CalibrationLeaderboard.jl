@@ -31,7 +31,7 @@ acquisition at those — exactly the loop implemented here.
 
 Structurally the closest existing method: a GP is refit every iteration to
 decide where to sample the forward model next, and (like `HistoryMatching`
-and `GaussNewtonKalmanInversion`) there is no separate "emulate"/"sample"
+and `KalmanSampler`) there is no separate "emulate"/"sample"
 stage — the GP fit, MCMC posterior sampling, and acquisition-batch
 optimization all live inside every iteration of `calibrate_<MODEL>.jl`.
 
@@ -92,7 +92,7 @@ a literal transcription of the paper's own single-final-budget framing.
 
 ## Variants / ablations (`BOED_VARIANT`)
 
-Four variants (two posterior samplers × with/without EIG) form an ablation grid. All share preliminaries, the GP fit,
+Six variants (three posterior samplers × with/without EIG) form an ablation grid. All share preliminaries, the GP fit,
 pushforward and leaderboard; they differ in the posterior sampler and the
 acquisition step inside `calibrate_<MODEL>.jl`. Select with the `BOED_VARIANT`
 env var (or `BOED_VARIANT` in `experiment_config.jl`); set it for **every**
@@ -104,6 +104,8 @@ stage, since it picks the output directory/netcdf (`method_key`).
 | `tmcmc` | `boed-tmcmc` | ST-MCMC | **No EIG:** `N_ens` draws from the ST-MCMC posterior |
 | `iekf_eig` | `boed-iekf-eig` | **IEKF on the GP surrogate** (no ST-MCMC) | Joint-batch EIG maximization against (a subsample of) the IEKF ensemble |
 | `iekf` | `boed-iekf` | **IEKF on the GP surrogate** (no ST-MCMC) | **No EIG:** `N_ens` draws from the IEKF posterior |
+| `eks_eig` | `boed-eks-eig` | **Ensemble Kalman sampler (EKS) on the GP surrogate**, 200 particles | Joint-batch EIG maximization against (a subsample of) the EKS ensemble |
+| `eks` | `boed-eks` | **Ensemble Kalman sampler (EKS) on the GP surrogate**, 200 particles | **No EIG:** `N_ens` draws from the EKS posterior |
 
 Hyphens are accepted in the env var (`BOED_VARIANT=tmcmc-eig`). The former
 `eig` variant / `boed` key is now `tmcmc_eig` / `boed-tmcmc-eig`.
@@ -120,6 +122,17 @@ GP predictive variance. The final IEKF ensemble is the stored per-iteration
 `iekf_iters` in `experiment_config.jl`. `iekf_eig` feeds that same IEKF
 ensemble to the EIG optimizer exactly as `tmcmc_eig` does with the ST-MCMC
 samples, isolating the sampler's effect with EIG held fixed.
+
+`eks` / `eks_eig` replace the finite-time IEKF with the ensemble Kalman *sampler*
+(`EKP.Sampler(prior; sampler_type = "eks")`, Garbuno-Inigo et al. 2019) on the same GP-mean forward map,
+prior, noise and LHS initial ensemble, with `EKSStableScheduler()` (data-dependent step) run until the
+scheduler numerator `eks_alpha = 0.25` (offline scans against `tmcmc_long` found smaller steps closer to the reference; `alpha` > 1 is unstable)
+for a fixed `eks_max_iters = 500` steps (`eks_T = Inf`; a finite `eks_T` stops earlier at that algorithm time, and `run_eks` warns if
+the step cap bites first), recording the algorithm time reached, using `eks_n_particles = 200` members. Unlike the IEKF it targets the posterior as
+T → ∞, at ~10× the number of GP-mean evaluations. The EKS posterior has 200 draws (not `n_posterior_samples`), so
+pushforward pads its sample set with NaN rows, which the leaderboard stage drops; the EIG subsample is 50 of the 200
+and the next batch is drawn from the 200. Diagnostics: `eks_steps`, `eks_T_reached`, `eks_secs`. The offline test2 evidence
+for it (`diagnostics/output/test2_sampler_convergence_combined.png`) is on posterior accuracy only.
 
 ```bash
 BOED_VARIANT=tmcmc julia --project=. calibrate_l63.jl 1
@@ -186,7 +199,7 @@ EXPERIMENT=l96_vec julia --project=. calibrate_l96.jl 5
 Wired up in `hpc-variant/`, following the same 3-stage pipeline
 (preliminaries → calibrate → pushforward → leaderboard) as
 `uq_experiments/HistoryMatching/hpc-variant/` and
-`uq_experiments/GaussNewtonKalmanInversion/hpc-variant/`. See
+`uq_experiments/KalmanSampler/hpc-variant/`. See
 `hpc-variant/README.md` for submission scripts and the full sbatch reference.
 
 ## Packages this method introduces to the repo
