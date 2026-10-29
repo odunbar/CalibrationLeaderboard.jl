@@ -144,6 +144,8 @@ function calibrate_one(cfg, setup, N_ens, rng_idx, output_dir)
     initial_params = construct_initial_ensemble(rng, setup.prior, N_ens)
     methods = if calibrate_method_case == :iekf
         [GaussNewtonInversion(setup.prior)]
+    elseif calibrate_method_case == :eks
+        [Sampler(setup.prior)]
     else
         [Inversion()]
     end
@@ -166,12 +168,16 @@ function calibrate_one(cfg, setup, N_ens, rng_idx, output_dir)
             )
         else
             # IEKF (GaussNewtonInversion) always uses a fixed-step scheduler,
-            # matching uq_experiments/GaussNewtonKalmanInversion's setup
+            # matching uq_experiments/KalmanSampler's setup
             # (the "ces-iekf-const" leaderboard key).
             scheduler = if isa(method, Inversion) && eki_scheduler_case == :const
                 DefaultScheduler(0.1)
             elseif isa(method, GaussNewtonInversion)
                 DefaultScheduler(0.1)
+            elseif isa(method, Sampler)
+                # EKS: matches uq_experiments/KalmanSampler's "sampler" variant
+                # (the "ces-eks" leaderboard key).
+                EKSStableScheduler()
             else
                 DataMisfitController(terminate_at = setup.terminate_at)
             end

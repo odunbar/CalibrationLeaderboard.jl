@@ -28,23 +28,32 @@ eki_scheduler_case = haskey(ENV, "EKI_SCHEDULER") ? Symbol(ENV["EKI_SCHEDULER"])
 #   :eki  -> Inversion() (EKI), scheduler chosen via EKI_SCHEDULER above.
 #   :iekf -> GaussNewtonInversion(prior) (IEKF), fixed-step DefaultScheduler(0.1),
 #            matching the scheduler used in the dedicated
-#            uq_experiments/GaussNewtonKalmanInversion experiment. Leaderboard
+#            uq_experiments/KalmanSampler experiment. Leaderboard
 #            file-naming key is "ces-iekf-const" (see method_cases_key below).
+#   :eks  -> Sampler(prior) (EKS), EKSStableScheduler(), matching the
+#            "sampler" variant of uq_experiments/KalmanSampler. Leaderboard
+#            file-naming key is "ces-eks" (see method_cases_key below).
 # Determines which entry of method_cases is "active" (method_cases[1]), so
 # every downstream stage (emulate_sample, pushforward, exp_to_leaderboard,
 # diagnostic plots) that defaults to method_cases[1] picks up the right
 # calib_directory / leaderboard key automatically.
 # Override via the CALIBRATE_METHOD env var for SLURM runs.
-calibrate_method_variants = [:eki, :iekf]
+calibrate_method_variants = [:eki, :iekf, :eks]
 CALIBRATE_METHOD = calibrate_method_variants[1]
 calibrate_method_case = haskey(ENV, "CALIBRATE_METHOD") ? Symbol(ENV["CALIBRATE_METHOD"]) : CALIBRATE_METHOD
 
 ########################################################################
 ###############  SHARED CONSTANTS  ####################################
 ########################################################################
-method_cases = calibrate_method_case == :iekf ?
-    ["GaussNewtonInversion", "TransformInversion", "Unscented", "Inversion"] :
+calibrate_method_case in calibrate_method_variants ||
+    throw(ArgumentError("Unknown CALIBRATE_METHOD: $calibrate_method_case. Expected one of $calibrate_method_variants"))
+method_cases = if calibrate_method_case == :iekf
+    ["GaussNewtonInversion", "TransformInversion", "Unscented", "Inversion"]
+elseif calibrate_method_case == :eks
+    ["Sampler", "TransformInversion", "Unscented", "Inversion"]
+else
     ["Inversion", "TransformInversion", "Unscented", "GaussNewtonInversion"]
+end
 
 method_names = [
     ("Inversion()", "EKI"),
@@ -58,6 +67,7 @@ method_cases_key = Dict(
     "TransformInversion"   => "ces-etki-dmc",
     "Unscented"            => "ces-uki-dmc",
     "GaussNewtonInversion" => "ces-iekf-const",
+    "Sampler"              => "ces-eks",
 )
 
 forcing_cases_key = Dict(

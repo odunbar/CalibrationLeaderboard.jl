@@ -494,7 +494,7 @@ end # SAVE_FULL_NC
 # Coverage-derived fields only, computed from R-whitened PCA output coverage
 # (see the "R-whitened PCA basis" section above) rather than raw per-dimension
 # marginal coverage — matches the metric in
-# ../GaussNewtonKalmanInversion/exp_to_leaderboard.jl.
+# ../KalmanSampler/exp_to_leaderboard.jl.
 
 ds_min = NCDataset(nc_minimal_filename, "c")
 

@@ -5,6 +5,10 @@
 #   EXP_ID (optional): label appended to SLURM job names so the queue stays
 #                      readable when all four cases run simultaneously,
 #                      e.g. "run2" → jobs appear as "calib_l96v_run2".
+#
+# Calibrate-stage variant: set CALIBRATE_METHOD=<eki|iekf|eks> (see
+# experiment_config.jl); --export=ALL forwards it to every stage. e.g.
+#   CALIBRATE_METHOD=eks bash submit_l96_vec.sh
 
 set -euo pipefail
 

@@ -35,6 +35,24 @@ CALIBRATE_DATE=2026-06-04 julia --project=. -e 'include("calibrate_l63.jl")'
 All subsequent stages include `experiment_config.jl` and read this value, so
 keeping it fixed ensures every stage finds the right output directory.
 
+## Calibrate-stage variants
+
+The `CALIBRATE_METHOD` env var (default `eki`, see `experiment_config.jl`)
+selects the update rule used in the calibrate stage; every downstream stage
+(emulate_sample, pushforward, leaderboard) follows automatically.
+
+| `CALIBRATE_METHOD` | process                | scheduler                                  | output dir / leaderboard key         |
+|--------------------|------------------------|--------------------------------------------|--------------------------------------|
+| `eki`              | `Inversion`            | `DataMisfitController` (`EKI_SCHEDULER=const` for `DefaultScheduler(0.1)`) | `Inversion_<date>` / `ces-eki-<dmc\|const>` |
+| `iekf`             | `GaussNewtonInversion` | `DefaultScheduler(0.1)`                    | `GaussNewtonInversion_<date>` / `ces-iekf-const` |
+| `eks`              | `Sampler(prior)`       | `EKSStableScheduler()`                     | `Sampler_<date>` / `ces-eks`         |
+
+`eks` uses the same process/scheduler as the `sampler` variant of
+`uq_experiments/KalmanSampler`, but keeps the emulate-sample stage: the EKS
+ensemble history is used as emulator training data, and the posterior comes
+from MCMC on the emulator. e.g. `CALIBRATE_METHOD=eks julia --project=. calibrate_l63.jl`,
+or `CALIBRATE_METHOD=eks bash submit_l63.sh` on HPC.
+
 ## Running scripts
 
 Run all scripts from the `examples/EKIRace/` directory using:
