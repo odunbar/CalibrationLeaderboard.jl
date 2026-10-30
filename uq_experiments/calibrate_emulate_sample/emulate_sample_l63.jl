@@ -52,7 +52,6 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1])
 
     final_params_constrained = get_ϕ_mean_final(priors, ekpobj)
     encoder_kwargs = encoder_kwargs_from(ekpobj, priors)
-    retain_var = cfg.retain_var
     nugget = 1e-6
 
     iter_end = length(get_u(ekpobj)) - 1
@@ -86,7 +85,10 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1])
             kernel_structure = SeparableKernel(DiagonalFactor(nugget), OneDimFactor()),
             optimizer_options = overrides,
         )
-        encoder_schedule = [(decorrelate_structure_mat(retain_var = retain_var), "in_and_out")]
+        encoder_schedule = [
+            (decorrelate_structure_mat(retain_var = cfg.retain_var_input), "in"),
+            (decorrelate_structure_mat(retain_var = cfg.retain_var_output), "out"),
+        ]
         emulator = Emulator(
             mlt,
             input_output_pairs;

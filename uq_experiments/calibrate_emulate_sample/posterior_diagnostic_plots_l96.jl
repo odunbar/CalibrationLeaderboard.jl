@@ -255,7 +255,7 @@ function ensemble_from_posterior_one(cfg, N_ens, rng_idx; method = method_cases[
         l = @layout [a b c]
         plt = plot(p2, p3, p4, layout = l)
 
-        suffix    = case_suffix(cfg, N_ens, rng_idx)
+        suffix    = case_suffix(cfg, N_ens, rng_idx) * dim_reduction_tag(cfg)
         figure_fn = "pushforward_from_posterior_$(suffix)_k$(k)_full_ens.png"
         savefig(plt, joinpath(data_save_directory, figure_fn))
         savefig(plt, joinpath(data_save_directory, replace(figure_fn, ".png" => ".pdf")))

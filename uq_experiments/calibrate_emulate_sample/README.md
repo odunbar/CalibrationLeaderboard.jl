@@ -53,6 +53,27 @@ ensemble history is used as emulator training data, and the posterior comes
 from MCMC on the emulator. e.g. `CALIBRATE_METHOD=eks julia --project=. calibrate_l63.jl`,
 or `CALIBRATE_METHOD=eks bash submit_l63.sh` on HPC.
 
+## Emulator dimension-reduction variants
+
+The `DIM_REDUCTION` env var (`PCA` (default) or `LIS`, case-insensitive; see
+`experiment_config.jl`) selects the encoder schedule used in the emulate_sample
+stage. It does not affect calibrate, so a `PCA` run can reuse an existing
+calibrate directory.
+
+| `DIM_REDUCTION` | input / output reduction | retain var (input / output) |
+|---------------------|--------------------------|-----------------------------|
+| `LIS`               | L96: `decorrelate_structure_mat()` then `likelihood_informed` on both. L63: PCA | `retain_var` = 0.99 (LI `retain_info`) |
+| `PCA`               | PCA only: `decorrelate_structure_mat(retain_var=…)` on input (prior cov) and output (R) | 0.99 / 0.99 (l63, l96_const); 0.9 / 0.99 (l96_vec, l96_flux) |
+
+`PCA` matches the truncated whitening of GBOED and History Matching (values
+mirror `BayesianOptimalExperimentalDesign/experiment_config.jl`), so it gives a
+like-for-like dimension-reduction comparison. L63 already uses PCA under `LIS`,
+so the two are identical there and share outputs. For L96, `PCA` writes
+`l96_posterior_pca_*.jld2` into the same calibrate directory and a
+`<key>-pca` leaderboard file (e.g. `ces-eki-dmc-pca_l96_…nc`), so `LIS` results
+are never overwritten. e.g. `DIM_REDUCTION=LIS julia --project=. emulate_sample_l96.jl`,
+or `DIM_REDUCTION=LIS bash submit_l96_vec.sh` on HPC (`--export=ALL` forwards it).
+
 ## Running scripts
 
 Run all scripts from the `examples/EKIRace/` directory using:

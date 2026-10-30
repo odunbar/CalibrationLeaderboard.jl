@@ -42,6 +42,26 @@ calibrate_method_variants = [:eki, :iekf, :eks]
 CALIBRATE_METHOD = calibrate_method_variants[1]
 calibrate_method_case = haskey(ENV, "CALIBRATE_METHOD") ? Symbol(ENV["CALIBRATE_METHOD"]) : CALIBRATE_METHOD
 
+# Emulator dimension-reduction (emulate_sample stage only; calibrate is unaffected):
+#   :LIS -> original. L96 cases: decorrelate_structure_mat() then likelihood_informed()
+#           (retain_info = cfg.retain_var) on input and output. L63: PCA (see :PCA).
+#   :PCA -> default. PCA-only, matching the truncated whitening used by GBOED and History
+#           Matching: decorrelate_structure_mat(retain_var = cfg.retain_var_input)
+#           on the input (prior-covariance PCA) and
+#           decorrelate_structure_mat(retain_var = cfg.retain_var_output) on the
+#           output (R PCA). Per-case values below mirror
+#           uq_experiments/BayesianOptimalExperimentalDesign/experiment_config.jl:
+#           99%/99% (l63, l96_const), 90%/99% (l96_vec, l96_flux) input/output.
+# L63 already uses PCA under :LIS, so :PCA is identical there and shares its outputs;
+# for L96, :PCA writes to separate posterior files and a "-pca" leaderboard key so it
+# never overwrites the :LIS results (the calibrate outputs are shared).
+# Override via the DIM_REDUCTION env var (PCA or LIS, case-insensitive) for SLURM runs.
+dim_reduction_variants = [:PCA, :LIS]
+DIM_REDUCTION = dim_reduction_variants[1]
+dim_reduction_case = haskey(ENV, "DIM_REDUCTION") ? Symbol(uppercase(ENV["DIM_REDUCTION"])) : DIM_REDUCTION
+dim_reduction_case in dim_reduction_variants ||
+    throw(ArgumentError("Unknown DIM_REDUCTION: $dim_reduction_case. Expected one of $dim_reduction_variants"))
+
 ########################################################################
 ###############  SHARED CONSTANTS  ####################################
 ########################################################################
@@ -99,7 +119,9 @@ function experiment_config(case::Symbol)
             terminate_at   = 2.0,   # DataMisfitController end time
             n_repeats      = n_repeats,
             max_iter       = 10,
-            retain_var     = 0.99,
+            retain_var     = 0.99,   # :LIS variant (likelihood_informed retain_info)
+            retain_var_input  = 0.99,   # :PCA variant, input (prior-cov PCA)
+            retain_var_output = 0.99,   # :PCA variant, output (R PCA)
             n_features     = 100,
             n_features_opt = 60,
             calibrate_date = calibrate_date,
@@ -114,7 +136,9 @@ function experiment_config(case::Symbol)
             terminate_at   = 2.0,
             n_repeats      = n_repeats,
             max_iter       = 15,
-            retain_var     = 0.99,
+            retain_var     = 0.99,   # :LIS variant (likelihood_informed retain_info)
+            retain_var_input  = 0.99,   # :PCA variant, input (prior-cov PCA)
+            retain_var_output = 0.99,   # :PCA variant, output (R PCA)
             n_features     = 200,
             n_features_opt = 160,
             calibrate_date = calibrate_date,
@@ -129,7 +153,9 @@ function experiment_config(case::Symbol)
             terminate_at   = 2.0,
             n_repeats      = n_repeats,
             max_iter       = 15,
-            retain_var     = 0.99,
+            retain_var     = 0.99,   # :LIS variant (likelihood_informed retain_info)
+            retain_var_input  = 0.9,   # :PCA variant, input (prior-cov PCA)
+            retain_var_output = 0.99,   # :PCA variant, output (R PCA)
             n_features     = 200,
             n_features_opt = 160,
             calibrate_date = calibrate_date,
@@ -144,7 +170,9 @@ function experiment_config(case::Symbol)
             terminate_at   = 2.0,
             n_repeats      = n_repeats,
             max_iter       = 15,
-            retain_var     = 0.99,
+            retain_var     = 0.99,   # :LIS variant (likelihood_informed retain_info)
+            retain_var_input  = 0.9,   # :PCA variant, input (prior-cov PCA)
+            retain_var_output = 0.99,   # :PCA variant, output (R PCA)
             n_features     = 200,
             n_features_opt = 160,
             calibrate_date = calibrate_date,
@@ -157,6 +185,10 @@ end
 ########################################################################
 ###############  FILENAME BUILDERS  ###################################
 ########################################################################
+# Tag distinguishing the :PCA emulator variant's outputs from the :LIS ones ("" for
+# :LIS, and for L63 where :PCA == :LIS). Appended to emulate_sample-onwards artefacts.
+dim_reduction_tag(cfg) = (dim_reduction_case == :PCA && cfg.model != "l63") ? "_pca" : ""
+
 function case_suffix(cfg, N_ens, rng_idx)
     if cfg.force_case === nothing
         return "$(N_ens)_$(rng_idx)"
@@ -188,7 +220,7 @@ end
 
 ekp_filename(cfg, N_ens, rng_idx)      = "$(cfg.model)_ekp_$(case_suffix(cfg, N_ens, rng_idx)).jld2"
 results_filename(cfg, N_ens, rng_idx)  = "$(cfg.model)_calibrate_results_$(case_suffix(cfg, N_ens, rng_idx)).jld2"
-posterior_filename(cfg, N_ens, rng_idx) = "$(cfg.model)_posterior_$(case_suffix(cfg, N_ens, rng_idx)).jld2"
+posterior_filename(cfg, N_ens, rng_idx) = "$(cfg.model)_posterior$(dim_reduction_tag(cfg))_$(case_suffix(cfg, N_ens, rng_idx)).jld2"
 
 function summary_filename(cfg)
     if cfg.force_case === nothing
@@ -199,7 +231,7 @@ function summary_filename(cfg)
 end
 
 function nc_filename(cfg, method)
-    key = method_cases_key[method]
+    key = method_cases_key[method] * replace(dim_reduction_tag(cfg), "_" => "-")
     if cfg.force_case === nothing
         return "$(key)_$(cfg.model)_ensemble_results_$(cfg.calibrate_date).nc"
     else

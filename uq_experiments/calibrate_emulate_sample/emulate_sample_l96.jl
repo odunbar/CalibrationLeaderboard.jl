@@ -63,6 +63,7 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1])
     final_params_constrained = get_ϕ_mean_final(priors, ekpobj)
     encoder_kwargs = encoder_kwargs_from(ekpobj, priors)
     retain_var = cfg.retain_var
+    @info "Dimension reduction: $(dim_reduction_case)" retain_var_input = cfg.retain_var_input retain_var_output = cfg.retain_var_output retain_var_li = retain_var
     nugget = 1e-6
 
     iter_end = length(get_u(ekpobj)) - 1
@@ -97,13 +98,19 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1])
             kernel_structure = SeparableKernel(DiagonalFactor(nugget), OneDimFactor()),
             optimizer_options = overrides,
         )
-        #                    encoder_schedule = [(decorrelate_structure_mat(retain_var = retain_var), "in_and_out")]
-        
-        encoder_schedule = [
-            (decorrelate_structure_mat(), "in_and_out"),
-            (likelihood_informed(retain_info=retain_var, iters=1:k),"in"),
-            (likelihood_informed(retain_info=retain_var),"out"), # iters=1:1 for output space
-        ]
+        encoder_schedule = if dim_reduction_case == :PCA
+            # PCA-only truncation, as in GBOED / History Matching (see experiment_config.jl)
+            [
+                (decorrelate_structure_mat(retain_var = cfg.retain_var_input), "in"),
+                (decorrelate_structure_mat(retain_var = cfg.retain_var_output), "out"),
+            ]
+        else
+            [
+                (decorrelate_structure_mat(), "in_and_out"),
+                (likelihood_informed(retain_info = retain_var, iters = 1:k), "in"),
+                (likelihood_informed(retain_info = retain_var), "out"), # iters=1:1 for output space
+            ]
+        end
         emulator = Emulator(
             mlt,
             input_output_pairs;
@@ -135,7 +142,7 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1])
             vline!(sp, [truth_params_constrained[i]], lc = :black, lw = 4)
             vline!(sp, [final_params_constrained[i]], lc = :magenta, lw = 4)
         end
-        figpath = joinpath(figure_save_directory, "l96_posterior_hist_$(calib_filename_suffix)_k$(k)")
+        figpath = joinpath(figure_save_directory, "l96_posterior_hist$(dim_reduction_tag(cfg))_$(calib_filename_suffix)_k$(k)")
         savefig(figpath * ".png")
 
         posteriors_by_k[k]       = posterior

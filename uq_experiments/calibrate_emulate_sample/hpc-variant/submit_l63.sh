@@ -9,6 +9,11 @@
 # Calibrate-stage variant: set CALIBRATE_METHOD=<eki|iekf|eks> (see
 # experiment_config.jl); --export=ALL forwards it to every stage. e.g.
 #   CALIBRATE_METHOD=eks bash submit_l63.sh
+#
+# Emulator dimension-reduction variant: set DIM_REDUCTION=<PCA|LIS> (default PCA =
+# GBOED/History-Matching-style truncation; LIS = likelihood-informed, original
+# L96 behaviour; see experiment_config.jl). e.g.
+#   DIM_REDUCTION=LIS bash submit_l63.sh
 
 set -euo pipefail
 
