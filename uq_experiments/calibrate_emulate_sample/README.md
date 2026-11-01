@@ -62,17 +62,16 @@ calibrate directory.
 
 | `DIM_REDUCTION` | input / output reduction | retain var (input / output) |
 |---------------------|--------------------------|-----------------------------|
-| `LIS`               | L96: `decorrelate_structure_mat()` then `likelihood_informed` on both. L63: PCA | `retain_var` = 0.99 (LI `retain_info`) |
+| `LIS`               | L96: `decorrelate_structure_mat()` then `likelihood_informed` on both (all cases) | `retain_var` = 0.99 (LI `retain_info`) |
 | `PCA`               | PCA only: `decorrelate_structure_mat(retain_var=…)` on input (prior cov) and output (R) | 0.99 / 0.99 (l63, l96_const); 0.9 / 0.99 (l96_vec, l96_flux) |
 
 `PCA` matches the truncated whitening of GBOED and History Matching (values
 mirror `BayesianOptimalExperimentalDesign/experiment_config.jl`), so it gives a
-like-for-like dimension-reduction comparison. L63 already uses PCA under `LIS`,
-so the two are identical there and share outputs. For L96, `PCA` writes
-`l96_posterior_pca_*.jld2` into the same calibrate directory and a
-`<key>-pca` leaderboard file (e.g. `ces-eki-dmc-pca_l96_…nc`), so `LIS` results
-are never overwritten. e.g. `DIM_REDUCTION=LIS julia --project=. emulate_sample_l96.jl`,
-or `DIM_REDUCTION=LIS bash submit_l96_vec.sh` on HPC (`--export=ALL` forwards it).
+like-for-like dimension-reduction comparison. For every case (L63 and L96), `PCA` writes
+`l<63|96>_posterior_pca_*.jld2` into the same calibrate directory and a
+`<key>-pca` leaderboard file (e.g. `ces-eki-dmc-pca_l63_…nc`), so `LIS` results
+are never overwritten. e.g. `DIM_REDUCTION=LIS julia --project=. emulate_sample_l63.jl`,
+or `DIM_REDUCTION=LIS bash submit_l63.sh` on HPC (`--export=ALL` forwards it).
 
 ## Running scripts
 
