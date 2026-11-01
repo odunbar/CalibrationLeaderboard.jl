@@ -24,7 +24,7 @@ include("experiment_config.jl")
 ############### Per-cell emulate–sample ################################
 ########################################################################
 
-function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1])
+function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1], ks = nothing)
     calib_dir = calib_directory(method, cfg)
     calib_filename_suffix = case_suffix(cfg, N_ens, rng_idx)
     @info("Perform emulate-sample for L96: \n method: $(calib_dir) \n experiment: $(calib_filename_suffix)")
@@ -72,13 +72,27 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1])
         @error("Not enough EKP iterations for emulate-sample loop. Skipping $(calib_filename_suffix)...")
         return
     end
-    @info "Running emulate-sample for k = 1:$(K) training iterations"
+    # ks === nothing: legacy mode, all k = 1:K serially, one combined posterior file.
+    # ks given (per-k array mode): only those k (clipped to K), written to per-k files
+    # under emu_k/ for merge_posterior_k.jl; k > K (wasted tasks) and k already done are skipped.
+    per_k = !isnothing(ks)
+    combined_fn = joinpath(data_save_directory, posterior_filename(cfg, N_ens, rng_idx))
+    ks_run = per_k ? [k for k in ks if k <= K] : collect(1:K)
+    if per_k
+        isfile(combined_fn) && (ks_run = Int[])  # already merged
+        filter!(k -> !isfile(joinpath(emu_k_directory(data_save_directory), posterior_k_filename(cfg, N_ens, rng_idx, k))), ks_run)
+    end
+    if isempty(ks_run)
+        @info "Nothing to do for $(calib_filename_suffix) (ks=$(ks), K=$(K)); skipping."
+        return
+    end
+    @info "Running emulate-sample for k = $(ks_run) training iterations (K = $(K))"
 
     posteriors_by_k       = Dict{Int, Any}()
     iop_by_k              = Dict{Int, Any}()
     encoder_schedule_by_k = Dict{Int, Any}()
 
-    for k in 1:K
+    for k in ks_run
         rng = Random.MersenneTwister(44011)
         input_output_pairs = Utilities.get_training_points(ekpobj, 1:k)
         @info "k = $(k): training on $(N_ens * k) samples (iterations 1:$(k))"
@@ -150,8 +164,10 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1])
         encoder_schedule_by_k[k] = get_encoder_schedule(emulator)
     end
 
+    out_fn = per_k ? joinpath(emu_k_directory(data_save_directory), posterior_k_filename(cfg, N_ens, rng_idx, first(ks_run))) : combined_fn
+    per_k && mkpath(dirname(out_fn))
     save(
-        joinpath(data_save_directory, posterior_filename(cfg, N_ens, rng_idx)),
+        out_fn,
         "posteriors_by_k",          posteriors_by_k,
         "input_output_pairs_by_k",  iop_by_k,
         "encoder_schedules_by_k",   encoder_schedule_by_k,
@@ -159,7 +175,8 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1])
         "truth_params_constrained", truth_params_constrained,
         "final_params_constrained", final_params_constrained,
         "truth_params",             truth_params,
-        "k_values",                 collect(1:K),
+        "k_values",                 ks_run,
+        "K_total",                  K,
     )
 end
 
@@ -177,7 +194,22 @@ function main()
     tasks = flat_tasks(cfg)
     idx   = task_index_from_args()
 
-    if isnothing(idx)
+    band = k_range_from_env(cfg)
+    if !isnothing(band)
+        # per-k array mode: one (N_ens, rng_idx, k) per task, k restricted to K_LO:K_HI
+        ktasks = flat_tasks_k(cfg; ks = band)
+        if isnothing(idx)
+            for (N_ens, rng_idx, k) in ktasks
+                emulate_sample_one(cfg, N_ens, rng_idx; ks = k:k)
+            end
+        else
+            if idx < 1 || idx > length(ktasks)
+                error("SLURM_ARRAY_TASK_ID $(idx) out of range 1:$(length(ktasks)) for k band $(band)")
+            end
+            N_ens, rng_idx, k = ktasks[idx]
+            emulate_sample_one(cfg, N_ens, rng_idx; ks = k:k)
+        end
+    elseif isnothing(idx)
         for (N_ens, rng_idx) in tasks
             emulate_sample_one(cfg, N_ens, rng_idx)
         end

@@ -10,6 +10,10 @@
 # experiment_config.jl); --export=ALL forwards it to every stage. e.g.
 #   CALIBRATE_METHOD=eks bash submit_l96_vec.sh
 #
+# emulate_sample runs as one array per band of k (<=1000 tasks each) with per-band wall-clock
+# requests, then merge_posterior assembles the per-k files; knobs (K_PER_BAND, BAND_TIMES,
+# THROTTLE, ...) are documented in submit_emulate_bands.sh.
+#
 # Emulator dimension-reduction variant: set DIM_REDUCTION=<PCA|LIS> (default PCA =
 # GBOED/History-Matching-style truncation; LIS = likelihood-informed, original
 # L96 behaviour; see experiment_config.jl). e.g.
@@ -22,6 +26,7 @@ LABEL="l96v${EXP_ID:+_${EXP_ID}}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 cd "$DIR"
+source "$DIR/submit_emulate_bands.sh"
 mkdir -p ../output/slurm
 
 # Pin the calibrate date once so every stage in this chain agrees, even if
@@ -60,21 +65,25 @@ CALIB_DIAG_JID=$(sbatch --parsable \
 		 calibration_diagnostic_plots_l96.sbatch)
 echo "  calibration_diagnostic_plots job ID: ${CALIB_DIAG_JID}"
 
-echo "=== Submitting emulate_sample (L96 vec-force, after ${CALIB_JID}) ==="
-EMU_JID=$(sbatch --parsable \
-		 -A esm \
-		 --job-name="emu_${LABEL}" \
-		 --dependency=afterok:${CALIB_JID} \
-		 --kill-on-invalid-dep=yes \
-		 --export=ALL,SCRIPT=emulate_sample_l96.jl,EXPERIMENT=l96_vec,CALIBRATE_DATE=${CALIBRATE_DATE} \
-		 emulate_sample_array.sbatch)
-echo "  emulate_sample job ID: ${EMU_JID}"
+echo "=== Submitting emulate_sample per-k bands (L96 vec-force, after ${CALIB_JID}) ==="
+# MAX_ITER MUST match max_iter in experiment_config.jl for this case.
+MAX_ITER=15
+submit_emulate_bands "${LABEL}" emulate_sample_l96.jl l96_vec "${CALIB_JID}" "${CALIBRATE_DATE}" "${MAX_ITER}"
 
-echo "=== Submitting pushforward_from_posterior (L96 vec-force, after ${EMU_JID}) ==="
+echo "=== Submitting merge_posterior (L96 vec-force, after ${EMU_JIDS}) ==="
+MERGE_JID=$(sbatch --parsable \
+		 -A esm \
+		 --job-name="merge_${LABEL}" \
+		 --dependency=afterany:${EMU_JIDS} \
+		 --export=ALL,EXPERIMENT=l96_vec,CALIBRATE_DATE=${CALIBRATE_DATE} \
+		 merge_posterior.sbatch)
+echo "  merge_posterior job ID: ${MERGE_JID}"
+
+echo "=== Submitting pushforward_from_posterior (L96 vec-force, after ${MERGE_JID}) ==="
 PUSHFWD_JID=$(sbatch --parsable \
 		 -A esm \
 		 --job-name="pushfwd_${LABEL}" \
-		 --dependency=afterany:${EMU_JID} \
+		 --dependency=afterany:${MERGE_JID} \
 		 --export=ALL,EXPERIMENT=l96_vec,CALIBRATE_DATE=${CALIBRATE_DATE} \
 		 pushforward_from_posterior.sbatch)
 echo "  pushforward_from_posterior job ID: ${PUSHFWD_JID}"

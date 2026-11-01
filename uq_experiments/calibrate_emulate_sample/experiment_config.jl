@@ -106,7 +106,7 @@ forcing_cases_key = Dict(
 
 
 function experiment_config(case::Symbol)
-    n_ens_step = 8 ## MUST CHANGE SBATCH ARRAY SIZE TO ((N_ENS_STEP + 1) * N_REPEATS)
+    n_ens_step = 8 ## MUST CHANGE SBATCH ARRAY SIZE TO ((N_ENS_STEP + 1) * N_REPEATS); also N_PER_K in hpc-variant/submit_emulate_bands.sh and MAX_ITER (= max_iter below) in hpc-variant/submit_l*.sh
     n_repeats = 20
     if case == :l63
         ens_step = 2
@@ -221,6 +221,14 @@ ekp_filename(cfg, N_ens, rng_idx)      = "$(cfg.model)_ekp_$(case_suffix(cfg, N_
 results_filename(cfg, N_ens, rng_idx)  = "$(cfg.model)_calibrate_results_$(case_suffix(cfg, N_ens, rng_idx)).jld2"
 posterior_filename(cfg, N_ens, rng_idx) = "$(cfg.model)_posterior$(dim_reduction_tag(cfg))_$(case_suffix(cfg, N_ens, rng_idx)).jld2"
 
+# Per-k emulate_sample artefacts (HPC per-k array mode, see K_LO / K_HI below). Each holds
+# the same keys as the combined posterior file but for a single k, plus "K_total" (the
+# number of k values the cell should have). merge_posterior_k.jl assembles them into
+# posterior_filename(...). Kept in a subdirectory of the calibrate directory.
+emu_k_directory(data_save_directory) = joinpath(data_save_directory, "emu_k")
+posterior_k_filename(cfg, N_ens, rng_idx, k) =
+    "$(cfg.model)_posterior$(dim_reduction_tag(cfg))_$(case_suffix(cfg, N_ens, rng_idx))_k$(k).jld2"
+
 function summary_filename(cfg)
     if cfg.force_case === nothing
         return "$(cfg.model)_output_$(cfg.calibrate_date).jld2"
@@ -246,6 +254,24 @@ end
 # Outer loop = N_ens_sizes, inner = repeats, matching the original serial nesting.
 flat_tasks(cfg) =
     [(N_ens, rng_idx) for N_ens in cfg.N_ens_sizes for rng_idx in 1:cfg.n_repeats]
+
+# Per-k emulate_sample array: flattened (N_ens, rng_idx, k) task list, k-major so that a
+# contiguous band of k (K_LO:K_HI) is a contiguous block of indices. The array for one
+# band has length (K_HI-K_LO+1) * length(N_ens_sizes) * n_repeats and must be <= 1000
+# (cluster MaxArraySize); see hpc-variant/submit_emulate_bands.sh.
+flat_tasks_k(cfg; ks = 1:cfg.max_iter) =
+    [(N_ens, rng_idx, k) for k in ks for N_ens in cfg.N_ens_sizes for rng_idx in 1:cfg.n_repeats]
+
+# Per-k mode is switched on by the K_LO / K_HI env vars (inclusive k band, default
+# 1:max_iter). Returns nothing when neither is set (legacy: all k serially per cell).
+function k_range_from_env(cfg)
+    (haskey(ENV, "K_LO") || haskey(ENV, "K_HI")) || return nothing
+    lo = parse(Int, get(ENV, "K_LO", "1"))
+    hi = parse(Int, get(ENV, "K_HI", string(cfg.max_iter)))
+    1 <= lo <= hi <= cfg.max_iter ||
+        throw(ArgumentError("Need 1 <= K_LO <= K_HI <= max_iter=$(cfg.max_iter); got K_LO=$lo, K_HI=$hi"))
+    return lo:hi
+end
 
 # Task index: prefer SLURM_ARRAY_TASK_ID, then first CLI arg, else nothing (run all).
 function task_index_from_args()
