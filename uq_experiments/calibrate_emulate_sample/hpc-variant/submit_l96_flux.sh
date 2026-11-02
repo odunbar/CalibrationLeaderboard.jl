@@ -24,6 +24,7 @@ set -euo pipefail
 EXP_ID=${1:-}
 LABEL="l96f${EXP_ID:+_${EXP_ID}}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
+BAND_TIMES=${BAND_TIMES:-"02:00:00 03:00:00 04:00:00"}
 
 cd "$DIR"
 source "$DIR/submit_emulate_bands.sh"
