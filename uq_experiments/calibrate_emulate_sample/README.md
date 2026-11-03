@@ -73,6 +73,25 @@ like-for-like dimension-reduction comparison. For every case (L63 and L96), `PCA
 are never overwritten. e.g. `DIM_REDUCTION=LIS julia --project=. emulate_sample_l63.jl`,
 or `DIM_REDUCTION=LIS bash submit_l63.sh` on HPC (`--export=ALL` forwards it).
 
+### Nullspace noise injector
+
+When the input encoder drops more than a threshold fraction of the prior variance,
+CES decodes MCMC samples by injecting prior-conditional noise into the dropped
+directions (log line `Injecting nullspace noise: <loss> > <threshold>`). The threshold
+follows `DIM_REDUCTION` (`noise_injector_threshold_case` in `experiment_config.jl`):
+
+| `DIM_REDUCTION` | threshold | behaviour |
+|-----------------|-----------|-----------|
+| `LIS`           | `0.001` (CES default) | injector active when the encoder is lossy; LIS drops likelihood-uninformed (prior-dominated) directions, so prior noise there is consistent |
+| `PCA`           | `Inf`     | injector off: dropped directions are pinned at the encoder mean, as in GBOED. Prior-covariance PCA can drop data-informed directions (e.g. `l96_flux` `W1`/`b2` at 90% input retention), where injected prior noise inflates the posterior ~2x and stops it contracting with k |
+
+There is no separate setting for it: selecting `DIM_REDUCTION` fixes the threshold. With the
+injector off (`PCA`) the posterior is rank-deficient in the dropped directions, which only
+affects parameter-space Mahalanobis / logpdf metrics. Posterior files keep the same `_pca`
+name, so rerunning `PCA` will not overwrite existing combined posteriors made with the
+injector on (`emulate_sample` and `merge_posterior_k.jl` skip cells that already exist):
+move or delete the old `l96_posterior_pca_*.jld2` first.
+
 ## Running scripts
 
 Run all scripts from the `examples/EKIRace/` directory using:

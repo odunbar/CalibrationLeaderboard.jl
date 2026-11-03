@@ -61,6 +61,26 @@ dim_reduction_case = haskey(ENV, "DIM_REDUCTION") ? Symbol(uppercase(ENV["DIM_RE
 dim_reduction_case in dim_reduction_variants ||
     throw(ArgumentError("Unknown DIM_REDUCTION: $dim_reduction_case. Expected one of $dim_reduction_variants"))
 
+# Nullspace noise injector (emulate_sample stage, MCMC posterior decoding):
+# when the input encoder is lossy, CES decodes MCMC samples by injecting prior-conditional
+# noise into the dropped directions IF the fraction of prior variance lost exceeds this
+# threshold ("Injecting nullspace noise: <loss> > <threshold>" in the logs); otherwise it
+# decodes without noise (dropped directions pinned at the encoder mean).
+#   :LIS -> 0.001 (CES default). LIS drops directions by likelihood information, so the
+#           dropped directions are prior-dominated and prior-conditional noise is a
+#           consistent reconstruction.
+#   :PCA -> Inf (injector off). Prior-covariance PCA ranks directions by prior variance,
+#           not data sensitivity, so dropped directions can be data-informed (e.g. l96_flux
+#           W1/b2 at 90% input retention): injected prior noise then inflates the posterior
+#           (output spread ~2x too wide, never contracts with k). Pinned decoding matches
+#           GBOED (discarded modes reconstruct at the prior mean) and keeps the comparison
+#           like-for-like.
+# Not a separate user setting: it is fully determined by the DIM_REDUCTION selection above.
+# Note: with the injector off the posterior is rank-deficient in the dropped directions
+# (affects parameter-space Mahalanobis / logpdf metrics only).
+noise_injector_threshold_defaults = Dict(:LIS => 0.001, :PCA => Inf)
+noise_injector_threshold_case = noise_injector_threshold_defaults[dim_reduction_case]
+
 ########################################################################
 ###############  SHARED CONSTANTS  ####################################
 ########################################################################

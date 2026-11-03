@@ -63,7 +63,7 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1], ks = 
     final_params_constrained = get_ϕ_mean_final(priors, ekpobj)
     encoder_kwargs = encoder_kwargs_from(ekpobj, priors)
     retain_var = cfg.retain_var
-    @info "Dimension reduction: $(dim_reduction_case)" retain_var_input = cfg.retain_var_input retain_var_output = cfg.retain_var_output retain_var_li = retain_var
+    @info "Dimension reduction: $(dim_reduction_case)" retain_var_input = cfg.retain_var_input retain_var_output = cfg.retain_var_output retain_var_li = retain_var noise_injector_threshold = noise_injector_threshold_case
     nugget = 1e-6
 
     iter_end = length(get_u(ekpobj)) - 1
@@ -145,7 +145,7 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1], ks = 
         new_step = optimize_stepsize(mcmc; init_stepsize = 0.2, N = 2000, discard_initial = 0)
         println("k=$(k) | Begin MCMC - step size ", new_step)
         chain = MarkovChainMonteCarlo.sample(mcmc, 100_000; stepsize = new_step, discard_initial = 2_000)
-        posterior = MarkovChainMonteCarlo.get_posterior(mcmc, chain)
+        posterior = MarkovChainMonteCarlo.get_posterior(mcmc, chain; noise_injector_threshold = noise_injector_threshold_case)
         println("k=$(k) | post_mean: ", mean(posterior))
         println("k=$(k) | D util: ", det(inv(cov(posterior))))
 
