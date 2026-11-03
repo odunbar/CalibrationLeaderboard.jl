@@ -92,6 +92,23 @@ name, so rerunning `PCA` will not overwrite existing combined posteriors made wi
 injector on (`emulate_sample` and `merge_posterior_k.jl` skip cells that already exist):
 move or delete the old `l96_posterior_pca_*.jld2` first.
 
+**Correcting an existing `PCA` run without rerunning MCMC.** `correct_nullspace_noise.jl`
+removes the injected noise from saved combined posteriors. This is exact for the saved chain:
+encoding the injected samples recovers the MCMC chain's encoded samples (the noise lives in the
+encoder's null space), and decoding those without noise is what the injector-off run produces.
+Kept coordinates are unchanged, dropped ones are pinned at the encoder mean. It drops the stale
+pushforward arrays and moves the originals to `output/<calib_dir>/injected_orig/`
+(`KEEP_ORIG=0` deletes them); it is idempotent and only touches cells where the injector was
+on. Then rerun pushforward, diagnostics and the leaderboard:
+
+```bash
+CALIBRATE_METHOD=eks CALIBRATE_DATE=2026-11-01 bash hpc-variant/submit_correct_nullspace.sh l96_flux
+```
+
+Cells with no combined posterior (e.g. timed-out cells) are skipped, and any leftover per-k files
+in `emu_k/` for them were made with the injector on, so delete those before rerunning the cell
+(otherwise `merge_posterior_k.jl` would mix injected and pinned k values).
+
 ## Running scripts
 
 Run all scripts from the `examples/EKIRace/` directory using:
