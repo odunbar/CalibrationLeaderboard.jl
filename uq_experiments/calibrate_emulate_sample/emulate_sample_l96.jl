@@ -142,7 +142,7 @@ function emulate_sample_one(cfg, N_ens, rng_idx; method = method_cases[1], ks = 
         ###  Sample: MCMC
         u0 = vec(mean(get_inputs(input_output_pairs), dims = 2))
         mcmc = MCMCWrapper(pCNMHSampling(), truth_sample, priors, emulator; init_params = u0)
-        new_step = optimize_stepsize(mcmc; init_stepsize = 0.2, N = 2000, discard_initial = 0)
+        new_step = optimize_stepsize(mcmc; init_stepsize = 0.01, N = 2000, discard_initial = 0)
         println("k=$(k) | Begin MCMC - step size ", new_step)
         chain = MarkovChainMonteCarlo.sample(mcmc, 100_000; stepsize = new_step, discard_initial = 2_000)
         posterior = MarkovChainMonteCarlo.get_posterior(mcmc, chain; noise_injector_threshold = noise_injector_threshold_case)
