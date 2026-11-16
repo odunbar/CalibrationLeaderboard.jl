@@ -216,7 +216,17 @@ function case_suffix(cfg, N_ens, rng_idx)
     end
 end
 
-calib_directory(method, cfg) = "$(method)_$(cfg.calibrate_date)"
+# Calibrate-stage output directory (holds ekp / calibrate_results / priors, and every downstream
+# artefact). The EKI ("Inversion") scheduler variants must not share a directory: their
+# filenames are identical (case_suffix has no scheduler), so a :const run on the same
+# CALIBRATE_DATE as a :dmc run would overwrite its ekp files and emulate_sample outputs.
+#   :dmc   -> Inversion_<date>        (unchanged / legacy name)
+#   :const -> Inversion-const_<date>
+# Other methods are unaffected. `method` may be a String or Symbol (nameof(typeof(method))).
+function calib_directory(method, cfg)
+    tag = (string(method) == "Inversion" && eki_scheduler_case == :const) ? "-const" : ""
+    return "$(method)$(tag)_$(cfg.calibrate_date)"
+end
 
 function prior_filename(cfg)
     if cfg.force_case === nothing

@@ -43,7 +43,7 @@ selects the update rule used in the calibrate stage; every downstream stage
 
 | `CALIBRATE_METHOD` | process                | scheduler                                  | output dir / leaderboard key         |
 |--------------------|------------------------|--------------------------------------------|--------------------------------------|
-| `eki`              | `Inversion`            | `DataMisfitController` (`EKI_SCHEDULER=const` for `DefaultScheduler(0.1)`) | `Inversion_<date>` / `ces-eki-<dmc\|const>` |
+| `eki`              | `Inversion`            | `DataMisfitController` (`EKI_SCHEDULER=const` for `DefaultScheduler(0.1)`) | `Inversion_<date>` (dmc) or `Inversion-const_<date>` (const) / `ces-eki-<dmc\|const>` |
 | `iekf`             | `GaussNewtonInversion` | `DefaultScheduler(0.1)`                    | `GaussNewtonInversion_<date>` / `ces-iekf-const` |
 | `eks`              | `Sampler(prior)`       | `EKSStableScheduler()`                     | `Sampler_<date>` / `ces-eks`         |
 
@@ -198,8 +198,13 @@ julia --project=. -e 'include("posterior_diagnostic_plots_l96.jl")'
 ```
 
 Reads each posterior `.jld2` (including the pushforward samples written in
-stage 5) and writes pushforward and posterior-ribbon diagnostic plots into
-the calibration output directory.
+stage 5) and writes the pushforward diagnostic plots into the calibration
+output directory.
+
+The prior-vs-posterior figure (forcing / θ and G(θ), in the style of the
+forward-map figures) is made from the posterior `.jld2` files by
+`common/vizualized_forward_map/plot_l{63,96}_posterior_pushforward.jl`, which
+write into that directory's `output/` (usage in its README).
 
 ### 7. Leaderboard
 
