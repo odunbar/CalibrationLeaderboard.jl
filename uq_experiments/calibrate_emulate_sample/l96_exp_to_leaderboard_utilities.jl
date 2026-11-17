@@ -65,7 +65,7 @@ if !haskey(first_loaded, "pushforward_output_samples")
     error("Pushforward data not found in $(first_post_fn). Run pushforward_from_posterior.sbatch first.")
 end
 
-n_params              = length(vec(mean(first_loaded["posteriors_by_k"][1])))
+n_params              = length(vec(mean(first(values(first_loaded["posteriors_by_k"])))))   # any k: k=1 may be a gap
 n_pushforward_samples = first_loaded["pushforward_n_samples"]
 n_output              = size(first_loaded["pushforward_output_samples"], 2)
 n_forcing             = size(first_loaded["pushforward_forcing_samples"], 2)

@@ -82,7 +82,7 @@ n_params, n_pushforward_samples, n_output, n_forcing = JLD2.jldopen(first_post_f
         error("Pushforward data not found in $(first_post_fn). Run pushforward_from_posterior.sbatch first.")
     end
     (
-        length(vec(mean(f["posteriors_by_k"][1]))),
+        length(vec(mean(first(values(f["posteriors_by_k"]))))),   # any k: k=1 may be a gap (see merge_posterior_k.jl)
         f["pushforward_n_samples"],
         size(f["pushforward_output_samples"], 2),
         has_forcing ? size(f["pushforward_forcing_samples"], 2) : 0,

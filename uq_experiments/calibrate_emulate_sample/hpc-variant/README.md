@@ -89,12 +89,17 @@ skipped too, so a band can be resubmitted to fill gaps.
 `merge_posterior.sbatch` (one task per cell, runs `../merge_posterior_k.jl`)
 then assembles the per-k files into the usual combined posterior file, so
 `pushforward_from_posterior`, the diagnostic plots and `exp_to_leaderboard` are
-unchanged. A cell is merged only if its per-k files cover `k = 1:K`
-contiguously; otherwise it is skipped with a warning and its per-k files are
-left in place (rerun the missing `k`, e.g. `K_LO=7 K_HI=7`, then rerun the merge).
+unchanged. A cell is merged from whichever per-k files exist (gaps allowed); `k`
+in `1:K` without a file are warned about and recorded as `missing_k` in the
+combined file (along with `K_total`), and are NaN in the leaderboard arrays. A
+budget that follows a gap is an upper bound, since `budget_to_target` takes the
+first `k` that is present and within tolerance. Only a cell with no per-k files
+is skipped. To fill gaps later, rerun the missing `k` (e.g. `K_LO=7 K_HI=7`),
+delete the combined file, then rerun the merge.
 Merging is idempotent (an existing combined file is never overwritten, which
 protects a pushforward already appended to it); per-k files are deleted after a
-successful merge unless `KEEP_K_FILES=1`.
+successful, complete merge unless `KEEP_K_FILES=1` (those of an incomplete cell
+are kept).
 
 Knobs (env vars, e.g. `K_PER_BAND=3 BAND_TIMES="00:30:00 02:00:00" bash submit_l96_vec.sh`):
 
